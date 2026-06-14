@@ -207,10 +207,12 @@ The avatar can even flip **local ↔ cloud at runtime** (a UI toggle writes
 | Phone access over Tailscale HTTPS | ✅ Working |
 | In-browser lip-sync + audio/video-sync check | 🔶 Verifying |
 | Swap demo face for our own portrait | 🔶 Pending |
+| Source on GitHub + team access | ✅ Private repo, 2 collaborators |
 | **Phase 2** — Mandarin (zh-TW) swap | ⏭️ Next |
 
 Access: WebRTC at `/client`; phone via
 `https://porsche-pc.tail21bb8a.ts.net/client` (Tailscale).
+Code: private GitHub repo, shared with collaborators for review.
 
 ---
 
