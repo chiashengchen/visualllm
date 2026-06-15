@@ -24,7 +24,11 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.turns.user_mute import AlwaysUserMuteStrategy
 from pipecat.runner.types import RunnerArguments
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
@@ -47,7 +51,15 @@ async def run_bot(transport: BaseTransport) -> None:
     meter = TtfoMeter(target_s=config.ttfo_target_s)
 
     context = LLMContext([{"role": "system", "content": config.system_prompt}])
-    aggregator = LLMContextAggregatorPair(context)
+    # Mute the mic while the bot is speaking so it can't transcribe its own voice
+    # (acoustic echo when running on a loudspeaker). Trade-off: this disables
+    # barge-in -- the user can't interrupt the bot mid-sentence.
+    aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_mute_strategies=[AlwaysUserMuteStrategy()],
+        ),
+    )
 
     pipeline = Pipeline(
         [
@@ -63,7 +75,9 @@ async def run_bot(transport: BaseTransport) -> None:
         ]
     )
 
-    # Barge-in is on by default in Pipecat 1.x when a VAD analyzer is present.
+    # VAD-based barge-in is available, but the AlwaysUserMuteStrategy above mutes
+    # the mic while the bot speaks, so interruptions are suppressed during bot
+    # speech (the echo-guard trade-off).
     task = PipelineTask(
         pipeline,
         params=PipelineParams(

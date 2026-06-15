@@ -1,0 +1,20 @@
+# F5-TTS-THAI spike — install in an ISOLATED venv (NOT the global env that runs the parent
+# pipeline) so heavy ML deps can't break the working pipecat/torch install.
+#
+#   py -3.11 -m venv .venv-f5
+#   .venv-f5\Scripts\activate
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # Blackwell/5060Ti
+#   pip install -r requirements.txt
+#
+# f5-tts pulls torch/torchaudio/transformers/vocos etc. Pin torch to the CUDA 12.8 wheel first
+# (above) so the 50-series GPU is used, then let f5-tts resolve the rest.
+f5-tts
+huggingface_hub
+fastapi
+uvicorn
+"numpy<2"          # native deps in this stack aren't NumPy-2 ABI-clean -> pin 1.x
+soundfile          # the torchcodec bypass loads audio via soundfile (see _compat.py)
+# faster-whisper   # OPTIONAL: only to (re)generate ref_text.txt for a new reference clip.
+#                  # The repo's ref transcript is already shipped as ref_text.txt, so runtime
+#                  # doesn't need it. Also: install ffmpeg (e.g. `winget install Gyan.FFmpeg`)
+#                  # so pydub can decode non-wav reference clips.

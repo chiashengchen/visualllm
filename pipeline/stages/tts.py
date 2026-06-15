@@ -19,11 +19,18 @@ def build_tts(cfg: Config):
     if provider == "elevenlabs":
         from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
-        # eleven_flash_v2_5 is multilingual + low latency (handles zh too).
+        # Model from .env (default flash = low latency; eleven_multilingual_v2 = warmer/slower).
+        # voice_settings are the emotion levers: low stability -> more expressive variance.
         return ElevenLabsTTSService(
             api_key=cfg.elevenlabs_api_key,
             voice_id=cfg.elevenlabs_voice_id,
-            model="eleven_flash_v2_5",
+            model=cfg.elevenlabs_model,
+            params=ElevenLabsTTSService.InputParams(
+                stability=cfg.elevenlabs_stability,
+                similarity_boost=0.75,
+                style=cfg.elevenlabs_style,
+                use_speaker_boost=True,
+            ),
         )
 
     if provider == "cartesia":
@@ -49,6 +56,15 @@ def build_tts(cfg: Config):
         from local_services.cosyvoice_tts import CosyVoiceTTSService
 
         return CosyVoiceTTSService(base_url=cfg.cosyvoice_url)
+
+    if provider == "f5_thai_local":
+        # Self-host SPIKE: local F5-TTS-THAI server (see local_services/f5_thai_server/).
+        # Reuses the same model-agnostic HTTP client — the server speaks the same /tts contract.
+        # NOTE: F5-TTS is not natively streaming; expect higher TTFO than CosyVoice2. The spike
+        # measures whether the open Thai voice clears quality + the ~3s "feels live" bar.
+        from local_services.cosyvoice_tts import CosyVoiceTTSService
+
+        return CosyVoiceTTSService(base_url=cfg.f5_thai_url)
 
     if provider == "kokoro_local":
         from pipecat.services.kokoro.tts import KokoroTTSService

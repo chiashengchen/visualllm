@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisualLLm — Runtime Pipeline Workflow</title>
+<style>
+  :root{
+    --bg:#0a0e14; --bg2:#0f141c; --panel:#141b26; --panel2:#1a2330;
+    --line:#26303f; --line2:#33415560;
+    --ink:#e8edf4; --ink2:#9fb0c3; --ink3:#647288;
+    --mic:#60a5fa; --vad:#34d399; --stt:#22d3ee; --ctx:#94a3b8;
+    --llm:#fbbf24; --tts:#f472b6; --av:#a78bfa; --met:#34d399; --out:#60a5fa;
+    --mono:'SF Mono',ui-monospace,'Cascadia Code','Roboto Mono',Consolas,monospace;
+    --sans:'Inter',-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:
+      radial-gradient(1100px 600px at 12% -8%, #16203010, transparent),
+      radial-gradient(900px 500px at 100% 0%, #1b162e18, transparent),
+      var(--bg);
+    color:var(--ink); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+    padding:34px clamp(16px,4vw,56px) 64px;
+  }
+  a{color:inherit}
+  .wrap{max-width:1060px;margin:0 auto}
+
+  /* ---------- header ---------- */
+  header{margin-bottom:26px}
+  .eyebrow{
+    font:600 12px/1 var(--mono); letter-spacing:.22em; text-transform:uppercase;
+    color:var(--ink3); margin-bottom:14px;
+  }
+  h1{font-size:clamp(26px,4.2vw,40px); line-height:1.08; margin:0 0 8px; letter-spacing:-.02em}
+  h1 .grad{
+    background:linear-gradient(92deg,#60a5fa,#a78bfa 42%,#f472b6 78%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .sub{color:var(--ink2); font-size:15.5px; max-width:64ch; margin:0}
+  .sub b{color:var(--ink); font-weight:600}
+
+  .chips{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+  .chip{
+    display:flex;align-items:center;gap:9px; padding:9px 14px;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:1px solid var(--line); border-radius:12px;
+  }
+  .chip .k{font:600 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)}
+  .chip .v{font-weight:700;font-size:15px}
+  .chip .v small{font-weight:500;color:var(--ink2);font-size:12.5px}
+  .chip.ok .v{color:#4ade80}
+  .chip.geo .v{color:#fbbf24}
+  .dot{width:7px;height:7px;border-radius:50%;background:#4ade80;box-shadow:0 0 0 3px #4ade8025}
+
+  .legend{display:flex;flex-wrap:wrap;gap:7px 16px;margin-top:18px;
+    padding-top:16px;border-top:1px solid var(--line)}
+  .lg{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink2)}
+  .lg i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+  /* ---------- flow ---------- */
+  .flow{position:relative;margin-top:30px}
+  .spine{position:absolute;left:31px;top:18px;bottom:18px;width:2px;
+    background:linear-gradient(180deg,var(--mic),var(--vad),var(--stt),var(--llm),var(--tts),var(--av),var(--out));
+    opacity:.35;border-radius:2px}
+  @media(max-width:640px){.spine{display:none}}
+
+  .stage{position:relative;display:flex;gap:18px;padding:7px 0}
+  .num{
+    flex:0 0 auto;width:64px;display:flex;align-items:flex-start;justify-content:center;
+    padding-top:18px;z-index:2;
+  }
+  .badge{
+    width:34px;height:34px;border-radius:11px;display:grid;place-items:center;
+    font:700 14px var(--mono); color:#06090e;
+    box-shadow:0 0 0 4px var(--bg), 0 6px 16px #0008;
+  }
+  .card{
+    flex:1 1 auto; position:relative;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:1px solid var(--line); border-left:3px solid var(--c,#444);
+    border-radius:14px; padding:14px 16px;
+    transition:transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  }
+  .card:hover{transform:translateY(-2px);box-shadow:0 12px 30px -12px #000c;border-color:var(--line2)}
+  .ctop{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .nm{font-weight:700;font-size:16px;letter-spacing:-.01em}
+  .tech{font-size:13.5px;color:var(--ink2)}
+  .tech b{color:var(--ink);font-weight:600}
+  .meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}
+  .file{font:500 11.5px var(--mono);color:var(--ink3);
+    background:#0b1018;border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  .pill{font:600 11px var(--mono);padding:2px 8px;border-radius:999px;letter-spacing:.02em}
+  .pill.lat{background:#0b1018;border:1px solid var(--line2)}
+  .pill.stream{color:#4ade80;background:#0e1b14;border:1px solid #1f5135}
+  .pill.warn{color:#fbbf24;background:#231a07;border:1px solid #5c4410}
+  .pill.local{color:#a78bfa;background:#16122a;border:1px solid #3a2f63}
+  .note{margin-top:9px;font-size:12.5px;color:var(--ink2);border-top:1px dashed var(--line);padding-top:9px}
+  .note b{color:var(--ink)}
+
+  /* group separators */
+  .grouptag{display:flex;align-items:center;gap:10px;margin:16px 0 4px;padding-left:82px}
+  .grouptag span{font:600 10.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ink3)}
+  .grouptag hr{flex:1;border:0;border-top:1px solid var(--line)}
+
+  /* overlap bracket */
+  .overlap{
+    position:relative;margin:6px 0 6px 82px;padding:11px 14px;
+    background:linear-gradient(90deg,#231a0730,#16122a30);
+    border:1px dashed #5c441088;border-radius:11px;
+    font-size:12.5px;color:var(--ink2);display:flex;gap:10px;align-items:flex-start;
+  }
+  .overlap b{color:#fbbf24}
+  .overlap .ico{font-size:15px;line-height:1.1}
+
+  /* barge-in loop note */
+  .loop{
+    margin:14px 0 0 82px;padding:11px 14px;border-radius:11px;
+    background:#0e1b1430;border:1px dashed #1f513588;
+    font-size:12.5px;color:var(--ink2);display:flex;gap:10px;align-items:flex-start;
+  }
+  .loop b{color:#4ade80}
+
+  /* ---------- latency budget ---------- */
+  .budget{margin-top:38px;background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:1px solid var(--line);border-radius:18px;padding:22px 22px 18px}
+  .budget h2{margin:0 0 4px;font-size:17px;letter-spacing:-.01em}
+  .budget p{margin:0 0 20px;color:var(--ink2);font-size:13px}
+  .budget p b{color:var(--ink)}
+  .track{position:relative;height:46px;background:#0b1018;border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;display:flex}
+  .seg{height:100%;display:flex;align-items:center;justify-content:center;position:relative;
+    font:600 11px var(--mono);color:#06090e;white-space:nowrap;overflow:hidden}
+  .seg span{padding:0 6px;text-shadow:0 1px 0 #fff3}
+  .seg.empty{background:repeating-linear-gradient(135deg,#10161f,#10161f 9px,#0d131b 9px,#0d131b 18px);
+    color:var(--ink3);text-shadow:none}
+  .marker{position:absolute;top:-6px;bottom:-6px;width:2px;background:#fff;z-index:3}
+  .marker.p95{background:#fbbf24}
+  .mlab{position:absolute;top:-23px;transform:translateX(-50%);font:600 10.5px var(--mono);
+    white-space:nowrap;color:var(--ink)}
+  .mlab.p95{color:#fbbf24}
+  .scale{display:flex;justify-content:space-between;margin-top:7px;font:500 10.5px var(--mono);color:var(--ink3)}
+  .bkey{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:18px}
+  .bk{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink2)}
+  .bk i{width:11px;height:11px;border-radius:3px}
+  .bk b{color:var(--ink);font-weight:600;font-family:var(--mono);font-size:11.5px}
+  .budget .takeaway{margin-top:18px;padding-top:16px;border-top:1px solid var(--line);
+    font-size:13px;color:var(--ink2)}
+  .budget .takeaway b{color:#fbbf24}
+
+  footer{margin-top:34px;color:var(--ink3);font-size:11.5px;text-align:center;
+    font-family:var(--mono);line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">VisualLLm · Runtime Workflow</div>
+    <h1>How one spoken turn travels<br><span class="grad">mic → LLM → talking-head → back</span></h1>
+    <p class="sub">A streaming pipeline on <b>Pipecat 1.3.0</b>, delivered to the browser over
+    <b>WebRTC</b>. The user speaks; a photoreal lip-synced face answers — multi-turn, with
+    barge-in, fully streaming. Every stage below is what happens to a <b>single utterance</b>,
+    in order, with its measured cost.</p>
+
+    <div class="chips">
+      <div class="chip ok"><span class="dot"></span><span class="k">TTFO median</span><span class="v">1.97 s</span></div>
+      <div class="chip ok"><span class="k">p95</span><span class="v">2.86 s</span></div>
+      <div class="chip"><span class="k">Target</span><span class="v">&lt; 8 s <small>acceptance bar</small></span></div>
+      <div class="chip geo"><span class="k">Runs from</span><span class="v">🇹🇭 Thailand <small>· cloud hops cross the Pacific</small></span></div>
+    </div>
+
+    <div class="legend" id="legend"></div>
+  </header>
+
+  <div class="flow" id="flow"><div class="spine"></div></div>
+
+  <!-- ---------- latency budget ---------- -->
+  <section class="budget">
+    <h2>Where the 8-second budget goes</h2>
+    <p>Per-turn delay against the <b>8 s</b> acceptance bar. The streaming design means stages
+    <b>overlap</b> — so end-to-end TTFO ≈ <b>VAD + LLM</b>, not the sum of every stage.</p>
+
+    <div class="track" id="track"></div>
+    <div class="scale"><span>0 s</span><span>2 s</span><span>4 s</span><span>6 s</span><span>8 s</span></div>
+
+    <div class="bkey" id="bkey"></div>
+
+    <div class="takeaway">The <b>LLM hop (~0.9–1.4 s)</b> is the single largest contributor — it
+    carries the transpacific round-trip to OpenRouter's US endpoint. It is the strongest argument
+    for an <b>Asia-region LLM endpoint</b>. TTS (0.22 s) and the local avatar render hide inside
+    the LLM's window, so they cost almost nothing on the critical path.</div>
+  </section>
+
+  <footer>
+    Figures cross-checked against pipeline/stages/*.py · pipeline/metrics.py · docs/PRESENTATION.md (measured 2026-06-14)<br>
+    Phase-1 stack (English) · avatar default = MuseTalk local GPU · generated as a runtime-workflow visual
+  </footer>
+
+</div>
+
+<script>
+/* ---- single source of truth for the flow ---- */
+const C = {mic:'#60a5fa',vad:'#34d399',stt:'#22d3ee',ctx:'#94a3b8',
+           llm:'#fbbf24',tts:'#f472b6',av:'#a78bfa',met:'#34d399',out:'#60a5fa'};
+
+const stages = [
+ {g:'Capture — browser → pipeline'},
+ {n:1,key:'mic',nm:'Browser mic',tech:'<b>WebRTC capture</b> · user speaks into the page',
+  file:'client/index.html',pills:[['stream','live audio']]},
+ {n:2,key:'out',nm:'Transport in',tech:'Pipecat <b>SmallWebRTCTransport</b> — audio frames enter the graph',
+  file:'pipeline/main.py',pills:[['lat','~50–100 ms RTT']]},
+
+ {g:'Listen — when is the turn done?'},
+ {n:3,key:'vad',nm:'Silero VAD',tech:'<b>Voice-activity detection</b>, local & always-on',
+  file:'pipeline/stages/vad.py',pills:[['lat','0.5 s hold'],['stream','real-time']],
+  note:'<b>stop_secs = 0.5</b> — the single biggest TTFO lever: shorter = snappier but risks cutting the user off. Always-on, so the user can <b>barge in</b> mid-answer.'},
+ {n:4,key:'stt',nm:'STT — speech → text',tech:'<b>Deepgram</b> <code>nova-2-general</code>, streaming partials',
+  file:'pipeline/stages/stt.py',pills:[['lat','~0.1–0.3 s'],['stream','streaming']],
+  note:'Runs <b>as you speak</b> with smart-format (punctuation + caps). Emits a <code>TranscriptionFrame</code> when VAD marks the turn finished.'},
+
+ {g:'Think — build context, generate reply'},
+ {n:5,key:'ctx',nm:'User context aggregator',tech:'Pipecat <b>LLMContextAggregatorPair</b> · <i>.user()</i>',
+  file:'Pipecat built-in',pills:[['lat','&lt;1 ms']],
+  note:'Collects the transcription into one user message, appends it to the running chat history, and fires the <code>LLMContextFrame</code> that <b>triggers the LLM</b>.'},
+ {n:6,key:'llm',nm:'LLM — generate the reply',tech:'<b>OpenRouter → Gemini 2.5 Flash Lite</b>, streamed tokens',
+  file:'pipeline/stages/llm.py',pills:[['warn','~0.9–1.4 s ⚠ bottleneck'],['stream','streams tokens']],
+  note:'<b>Largest single delay</b> — carries the transpacific round-trip Thailand → US. <b>Pre-warmed</b> on connect (open TLS + fixed greeting, no round-trip) so turn 1 pays no cold-start tax.'},
+ {n:7,key:'ctx',nm:'Sentence aggregation',tech:'Tokens grouped into <b>full sentences</b>',
+  file:'Pipecat (LLM aggregator)',pills:[['stream','overlaps TTS']],
+  note:'The <b>first sentence reaches TTS before the full answer exists</b> — this is why LLM, TTS and avatar overlap instead of running back-to-back.'},
+
+ {g:'Speak — text → audio → face'},
+ {n:8,key:'tts',nm:'TTS — text → audio',tech:'<b>ElevenLabs</b> Flash v2.5 · voice <i>Adam</i>',
+  file:'pipeline/stages/tts.py',pills:[['lat','0.22 s first chunk'],['stream','streaming']],
+  note:'<code>optimize_streaming_latency</code> returns first audio in a fraction of a second (0.22 s warm / 2.58 s cold). Emits <code>TTSAudioRawFrame</code> chunks @ 24 kHz.'},
+ {n:9,key:'av',nm:'Avatar — audio → lip-synced video',tech:'<b>MuseTalk</b> local GPU <span style="color:#647288">↔ Simli cloud</span>',
+  file:'pipeline/stages/avatar.py',pills:[['local','~32 ms/frame → 20 fps'],['stream','streams frames']],
+  note:'Default <b>MuseTalk v1.5 on RTX 5060 Ti</b> (no cloud hop) via <code>local_services/musetalk_server/app.py</code>. Flip <b>local ↔ cloud at runtime</b> with <code>avatar_mode.txt</code> — no restart. Simli cloud = legacy (~10–15 s warmup).'},
+
+ {g:'Deliver — measure & stream out'},
+ {n:10,key:'met',nm:'TTFO meter',tech:'<b>TtfoMeter</b> — times UserStopped → BotStarted',
+  file:'pipeline/metrics.py',pills:[['lat','passive']],
+  note:'Logs every turn <code>[TTFO]</code> and prints median / p95 / max / pass on disconnect. This is where the 1.97 s headline comes from.'},
+ {n:11,key:'out',nm:'Transport out → browser',tech:'<b>WebRTC</b> video + audio → <code>&lt;video id="avatar"&gt;</code>',
+  file:'client/index.html',pills:[['stream','video + audio']],
+  note:'The talking head plays in the page. Phone access works the same way over Tailscale HTTPS.'},
+ {n:12,key:'ctx',nm:'Assistant context aggregator',tech:'Pipecat <b>LLMContextAggregatorPair</b> · <i>.assistant()</i>',
+  file:'Pipecat built-in',pills:[['lat','&lt;1 ms']],
+  note:'Appends the bot’s reply back into the chat history — so the <b>next turn sees the full conversation</b>. Closes the loop; barge-in can start a new turn anytime.'},
+];
+
+/* ---- render flow ---- */
+const flow = document.getElementById('flow');
+stages.forEach(s=>{
+  if(s.g){
+    const t=document.createElement('div');t.className='grouptag';
+    t.innerHTML=`<hr style="max-width:0"><span>${s.g}</span><hr>`;
+    flow.appendChild(t);
+    // inject overlap bracket right before the "Speak" group
+    if(s.g.startsWith('Speak')){
+      const ov=document.createElement('div');ov.className='overlap';
+      ov.innerHTML=`<span class="ico">⟲</span><div><b>Streaming overlap (stages 6 → 9).</b>
+        LLM, TTS and the avatar run <b>concurrently</b>, not in series. The first sentence is
+        already being spoken and lip-synced while the LLM is still writing the rest — so
+        <b>TTFO ≈ VAD + LLM</b>, far less than the sum of all stages.</div>`;
+      flow.appendChild(ov);
+    }
+    return;
+  }
+  const col=C[s.key];
+  const row=document.createElement('div');row.className='stage';
+  const pills=(s.pills||[]).map(([cls,txt])=>`<span class="pill ${cls==='lat'?'lat':cls}">${txt}</span>`).join('');
+  row.innerHTML=`
+    <div class="num"><div class="badge" style="background:linear-gradient(135deg,${col},${col}bb)">${s.n}</div></div>
+    <div class="card" style="--c:${col}">
+      <div class="ctop"><span class="nm">${s.nm}</span><span class="tech">${s.tech}</span></div>
+      <div class="meta"><span class="file">${s.file}</span>${pills}</div>
+      ${s.note?`<div class="note">${s.note}</div>`:''}
+    </div>`;
+  flow.appendChild(row);
+});
+
+/* barge-in loop note at the end */
+const loop=document.createElement('div');loop.className='loop';
+loop.innerHTML=`<span class="ico">↻</span><div><b>Multi-turn & interruptible.</b> Because the
+  VAD (stage 3) is always listening, the user can <b>barge in</b> over the avatar at any moment —
+  that cancels the current reply and starts a fresh turn back at stage 4. The conversation loops.</div>`;
+flow.appendChild(loop);
+
+/* ---- render legend ---- */
+const legendItems=[['mic','Browser / WebRTC'],['vad','VAD / meter (local)'],['stt','STT'],
+  ['ctx','Context (Pipecat)'],['llm','LLM — bottleneck'],['tts','TTS'],['av','Avatar']];
+document.getElementById('legend').innerHTML=legendItems
+  .map(([k,l])=>`<span class="lg"><i style="background:${C[k]}"></i>${l}</span>`).join('');
+
+/* ---- latency budget bar (scaled to 8 s) ---- */
+const BUDGET=8;
+const segs=[
+  {k:'vad',lab:'VAD 0.5 s',v:0.5,c:C.vad},
+  {k:'stt',lab:'STT ~0.2 s',v:0.2,c:C.stt},
+  {k:'llm',lab:'LLM ~1.15 s',v:1.15,c:C.llm},
+  {k:'av', lab:'avatar ~0.12 s',v:0.12,c:C.av},
+];
+const used=segs.reduce((a,s)=>a+s.v,0);          // ~1.97 s -> median
+const track=document.getElementById('track');
+segs.forEach(s=>{
+  const d=document.createElement('div');d.className='seg';
+  d.style.width=(s.v/BUDGET*100)+'%';
+  d.style.background=`linear-gradient(180deg,${s.c},${s.c}cc)`;
+  d.title=s.lab;
+  d.innerHTML=`<span>${s.v>=0.45?s.lab:''}</span>`;
+  track.appendChild(d);
+});
+const empty=document.createElement('div');empty.className='seg empty';
+empty.style.width=((BUDGET-used)/BUDGET*100)+'%';
+empty.innerHTML=`<span>~${(BUDGET-used).toFixed(1)} s headroom under the 8 s bar</span>`;
+track.appendChild(empty);
+
+/* markers: median (used) and p95 */
+function marker(sec,cls,label){
+  const m=document.createElement('div');m.className='marker '+cls;
+  m.style.left=(sec/BUDGET*100)+'%';
+  m.innerHTML=`<span class="mlab ${cls}">${label}</span>`;
+  track.appendChild(m);
+}
+marker(used,'med','median 1.97 s');
+marker(2.86,'p95','p95 2.86 s');
+
+/* budget key (incl. the overlapped TTS) */
+const bkey=document.getElementById('bkey');
+const keyrows=[
+  ['vad','VAD silence hold','0.5 s'],
+  ['stt','Deepgram STT','~0.2 s'],
+  ['llm','LLM first token (transpacific)','~0.9–1.4 s'],
+  ['tts','ElevenLabs TTS — overlapped, off critical path','0.22 s'],
+  ['av','MuseTalk local render','~32 ms/frame'],
+];
+bkey.innerHTML=keyrows.map(([k,l,v])=>
+  `<span class="bk"><i style="background:${C[k]}"></i>${l} <b>${v}</b></span>`).join('');
+</script>
+</body>
+</html>
