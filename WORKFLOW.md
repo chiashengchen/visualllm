@@ -42,8 +42,8 @@ mic → transport.input() (+ Silero VAD)
     → STT          (Deepgram nova-2)         : audio → text  ("hello")
     → aggregator.user()                      : builds the user message
     → LLM          (OpenRouter)              : streamed, sentence-by-sentence answer
-    → TTS          (Deepgram Aura / ElevenLabs): text → voice audio chunks
-    → Avatar       (DittoVideoService)        : voice → lip-synced video (via :8002)
+    → TTS          (CosyVoice2 on vLLM, :8001) : text → voice audio chunks
+    → Avatar       (MuseTalkVideoService)      : voice → lip-synced video (via :8002)
     → TtfoMeter                              : measures UserStoppedSpeaking → BotStartedSpeaking
     → transport.output()                     : audio + video → browser
 ;   aggregator.assistant()                   : records the bot turn into context
@@ -78,12 +78,16 @@ response is **streamed and sentence-aggregated** so TTS can start on sentence 1.
 system prompt (in `pipeline/config.py`) keeps replies spoken-style (no markdown/emoji).
 Needs `OPENROUTER_API_KEY`.
 
-### TTS — Deepgram Aura (current) / ElevenLabs (default)
+### TTS — CosyVoice2 on vLLM (default) / ElevenLabs / Deepgram Aura (fallbacks)
 `pipeline/stages/tts.py`. Converts the LLM text to voice audio chunks, streamed.
-- **Default**: ElevenLabs `flash_v2_5` (low latency, multilingual — covers zh-TW).
-- **Fallback**: `TTS_PROVIDER=deepgram` → Deepgram **Aura** (reuses `DEEPGRAM_API_KEY`).
-  English-only. Used when the ElevenLabs account is out of credits.
-- Flip back by removing `TTS_PROVIDER` (or setting `elevenlabs`) and restarting.
+- **Default**: `TTS_PROVIDER=cosyvoice` → the local CosyVoice2-0.5B server at `COSYVOICE_URL`
+  (female zero-shot voice, covers en/zh). Since 2026-06-22 it runs its autoregressive LLM on
+  **vLLM in WSL** → first-chunk latency ~3.4s → **~1.1s** (separate repo `E:\Claude\cosyvoice-local-tts`,
+  `run_vllm_server.sh`). **`COSYVOICE_URL` must be the WSL IP, NOT localhost** (WSL2's localhost relay
+  buffers the streaming audio ~2s). The original Windows `tts`-env PyTorch server is the fallback
+  (set `COSYVOICE_URL=http://localhost:8001` + start it).
+- **Fallbacks**: `TTS_PROVIDER=elevenlabs` (`flash_v2_5`, multilingual cloud) or `deepgram`
+  (Deepgram **Aura**, reuses `DEEPGRAM_API_KEY`, English-only).
 
 ### Avatar (client side) — `DittoVideoService`
 `local_services/ditto_video.py`, a Pipecat `FrameProcessor` sitting between TTS and the
@@ -233,23 +237,26 @@ layer. Mitigations, in order of effectiveness for the photoreal path:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANGUAGE` | `en` | `en` / `zh` / `th` (STT + voice) |
-| `AVATAR` | `ditto` | `ditto` (server photoreal) or `none` (client-rendered, audio-only) |
+| `AVATAR` | `musetalk` | `musetalk` (mouth-region, default) / `ditto` (full-face photoreal) / `none` (client-rendered, audio-only) |
 | `CHARACTER_MODE` | `0` | `1` = in-character Thai persona + emotion tags |
-| `TTS_PROVIDER` | `elevenlabs` | `deepgram` = Aura fallback (reuses Deepgram key, en-only) |
-| `DEEPGRAM_TTS_VOICE` | `aura-2-helena-en` | Aura voice when on Deepgram TTS |
+| `TTS_PROVIDER` | `cosyvoice` | `elevenlabs` (multilingual cloud) / `deepgram` (Aura, en-only) fallbacks |
+| `COSYVOICE_URL` | `http://localhost:8001` | the CosyVoice server — set to the **WSL IP** for the vLLM server (NOT localhost; the relay buffers the stream), localhost for the Windows fallback |
+| `COSYVOICE_VOICE` / `COSYVOICE_PACE_RATE` | `weather` / `1.3` | zero-shot speaker id / GPU-pacing cap (server-side) |
+| `DEEPGRAM_TTS_VOICE` | `aura-2-helena-en` | Aura voice when `TTS_PROVIDER=deepgram` |
 | `OPENROUTER_MODEL` | `google/gemini-2.5-flash-lite` | any OpenRouter model |
-| `CLIENT_JITTER_BUFFER_MS` | `400` | receive-side WebRTC jitter buffer (0 = off); ~250 for remote |
-| `DITTO_SIZE` | `512` | square frame px (one value across server/client/transport); 320 for remote |
-| `WEBRTC_VIDEO_BITRATE_MAX` | `600000` | VP8 send-bitrate ceiling, bits/s (0 = aiortc default 1.5M) |
-| `WEBRTC_VIDEO_BITRATE` / `_MIN` | `500000` / `120000` | VP8 start-point / floor (graceful dip, no freeze) |
-| `DITTO_FPS` | `12` | avatar output fps (one value across server/client/transport) |
-| `DITTO_TRT` | `1` | TensorRT FP16 render path (0 = pure PyTorch) |
-| `DITTO_OVERLAP` / `DITTO_STEPS` | `25` / `25` | diffusion window / sampling steps (sync sweet spot) |
-| `DITTO_SYNC_LEAD_S` | `0` | constant lip-lead compensation |
-| `TTFO_TARGET_SECONDS` | — | the < 8 s target for logging |
+| `WEBRTC_ICE_SUBNET` | `100.64.0.0/10` | pin WebRTC ICE host candidates to the Tailscale interface (fixes the intermittent remote mic); `0` = advertise all |
+| `CLIENT_JITTER_BUFFER_MS` | `150` | receive-side WebRTC jitter buffer (0 = off); raise to ~250-400 for remote |
+| `WEBRTC_VIDEO_BITRATE_MAX` | `400000` | VP8 send-bitrate ceiling, bits/s (0 = aiortc default 1.5M) |
+| `MUSETALK_SYNC_MODE` | `steady` | video-master, synced start (user's pick + default). The old steady "screech" is FIXED (`_align_even` whole-sample guard + `BOT_VAD_STOP_FALLBACK_SECS` raise, `docs/PROBLEMS-AND-FIXES.md` P3). Tradeoff: under a long render stall the voice briefly pauses then resumes clean. `live` = audio-master (voice never pauses, lips trail ~0.75s) is the alternative |
+| `MUSETALK_FPS` / `MUSETALK_SIZE` | `12` / `256` | avatar output fps / frame px |
+| `MUSETALK_LEAD_FRAMES` | `14` | video-start cushion — **load-bearing** (lower starves the queue → freeze) |
+| `MUSETALK_FEED_BURST_S` | `1.0` | burst the first 1s of a turn's audio un-paced → renderer not starved at turn start (lip-start lag ~1.9s→~0.8s; `docs/PROBLEMS-AND-FIXES.md` P2) |
+| `MUSETALK_END_TAIL_FRAMES` | `10` | ease-out neutral frames after speech (softer mouth-close) |
+| `DITTO_*` (when `AVATAR=ditto`) | — | `DITTO_TRT`/`DITTO_FPS`/`DITTO_SIZE`/`DITTO_OVERLAP`/`DITTO_SYNC_WITH_AUDIO`/`DITTO_SYNC_LEAD_S` |
+| `TTFO_TARGET_SECONDS` | `8` | the < 8 s target for logging |
 
-Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY`, and (for default TTS)
-`ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID`.
+Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY` +
+`ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`).
 
 ---
 

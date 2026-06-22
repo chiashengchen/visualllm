@@ -1,5 +1,12 @@
 # Setup — buying & wiring the APIs (dedicated provider per stage)
 
+> **⚠️ Partly historical (the original cloud-API setup guide).** The current default stack is
+> mostly **local**: TTS = **CosyVoice2 on vLLM in WSL** (not ElevenLabs), avatar = **MuseTalk**
+> local server (not Simli). The only paid APIs still required are **Deepgram** (STT) and
+> **OpenRouter** (LLM); ElevenLabs is now an optional fallback. See **`STATUS.md`** / **`TECH_STACK.md`**
+> for the live stack and **`WORKFLOW.md` §8** for the `.env` reference. The provider-shopping
+> details below are kept for the cloud-fallback path.
+
 We use a **dedicated streaming provider for each stage** (not an aggregator like
 fal.ai), because streaming providers give the lowest latency — which is what the
 <8 s time-to-first-output goal needs. You buy four services; each owns one box in

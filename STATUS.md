@@ -1,9 +1,102 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-21_
+_Last updated: 2026-06-22 (evening)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the two processes, the
 > turn flow, the avatar wire contract, running locally + remote, config reference).
+> **See `docs/PROBLEMS-AND-FIXES.md`** for the full catalogue of bugs found + how each was
+> fixed (this session's deep debug included).
+
+## ⭐⭐⭐ Session 2026-06-22 (evening): avatar lag root-caused + fixed; steady-mode screech traced to pipecat
+
+A long systematic-debugging session on "the avatar lags / the voice screams". Net: **two real
+avatar-timing bugs fixed and measured**, and the **steady-mode voice screech reliably root-caused
+to a pipecat library bug** (not our code) — so the system stays on **`MUSETALK_SYNC_MODE=live`**.
+Full per-problem writeup: **`docs/PROBLEMS-AND-FIXES.md`**.
+
+**1. ✅ FIXED — the avatar started ~2s late / "audio ends then the avatar moves for ~10s" on long
+replies = a per-turn cuDNN re-autotune spike.** `musetalk_server/app.py` set
+`torch.backends.cudnn.benchmark = True` ("fixed shapes"), but the **turn-START segment has a
+different shape** than mid-turn segments, so cuDNN re-ran its expensive algorithm autotune on the
+**first segment of every turn** → a **~16 s GPU spike** on this shared card (profiled:
+`gpu=16372ms` first segment, `240ms` after). That made the first lip frame land ~5 s late and the
+render fall hopelessly behind on long replies. **Fix: `cudnn.benchmark = False`.** Measured:
+first-segment GPU **16,372 ms → 346 ms**, lips-start **+5.3 s → +1.0 s**, a 13 s reply now renders
+179 frames at a steady 12 fps. Bonus: server warmup **17.7 s → 1.0 s**.
+
+**2. ✅ FIXED — residual ~1.9 s lip-start lag = the renderer was starved at turn start.** The
+real-time-paced feed (`musetalk_video.py _feed_q`) also starved the renderer at the *start* of a
+turn (it couldn't fill its lead-frame prime until audio trickled in). **Fix: burst the first
+`MUSETALK_FEED_BURST_S`=1.0 s of a turn's audio un-paced, then resume pacing.** Measured lip-start
+**~1.9 s → ~0.75–1.0 s**, no backlog. (Also added a one-shot **`_warmup()`** at server load and a
+per-turn **`[avatar timing]`** log: `lips start +Xs after voice | … | end drift +Ys`.)
+
+**3. ✅ FIXED (2026-06-22 night) — `MUSETALK_SYNC_MODE=steady` intermittently SCREECHED the voice
+mid-reply; steady is now the default.** The earlier conclusion ("unfixable pipecat non-live
+write-path bug, stay on live") was **wrong** — that boundary table came from non-time-aligned runs +
+per-frame RMS false positives. Re-traced at the **byte level**: the screech is a **1-byte (odd)
+sample misalignment, not generated noise** (shifting the garbled region by 1 byte recovers clean
+speech: flatness 0.52→0.079). Byte-diffing the clean MuseTalk-push stream vs the delivered stream:
+identical until 6.040s, then **1049 bytes (odd) DELETED**, rest bit-identical but odd-shifted →
+broadband noise to turn end. **Root cause:** pipecat's output transport fires `_bot_stopped_speaking()`
+when no audio reaches its queue for `BOT_VAD_STOP_FALLBACK_SECS` (**3s**), and that handler does
+`self._audio_buffer = bytearray()` — discarding the partial buffer. In steady the voice is released
+**paced to rendered video**, so a **>3s render stall** starves the queue → the 3s timeout fires
+**mid-turn** → the odd partial buffer is discarded → the rest of the turn is odd-misaligned = screech.
+(Live forwards audio continuously, never a 3s gap — that's why it was clean.) **Fix:**
+`main.py::_relax_bot_vad_stop_timeout()` raises that timeout (knob `BOT_VAD_STOP_FALLBACK_SECS`,
+default 600s); we already drive an explicit `TTSStoppedFrame` per turn so the audio-gap fallback is
+redundant. A stall now just pauses the voice and it resumes clean. **Verified:** deterministic
+`scripts/_screech_repro_test.py` (drives the real `MediaSender`: 3s timeout discards the partial
+buffer = bug; raised timeout keeps it = fix) **PASS**; live steady turns deliver **byte-identical**
+pre/post-transport audio (0 noisy windows). Full writeup: `docs/PROBLEMS-AND-FIXES.md` P3.
+
+**New tooling this session:** `scripts/measure.py` (one-command turn timeline → `output/
+measure_report.json` + `docs/measure_data.js`, auto-rendered by `docs/workflow-timeline.html`),
+`docs/gpu-timeline.html` (CosyVoice-vs-MuseTalk GPU share), and env-gated audio-debug captures
+(all default OFF): `COSYVOICE_DELIVERED_CAPTURE`, `COSYVOICE_HANDLE_AUDIO_PROBE`,
+`COSYVOICE_YIELD_PROBE`, `MUSETALK_DOWNSTREAM_CAPTURE`, `COSYVOICE_NOISE_LOG`/`CAPTURE_ALL`.
+
+**Current accepted `.env`:** `MUSETALK_SYNC_MODE=live`, `MUSETALK_LEAD_FRAMES=14` (load-bearing —
+lower starves → freeze), `MUSETALK_END_TAIL_FRAMES=10` (softer mouth-close, user's choice),
+`MUSETALK_FEED_BURST_S=1.0`, plus the `cudnn.benchmark=False` code fix.
+
+---
+
+## ⭐⭐ Session 2026-06-22: reliability fixes + CosyVoice on vLLM (TTFB 3.4s → ~1.1s)
+
+A "works sometimes, mostly not / not smooth" report was traced to **three** separate causes,
+all fixed, plus the TTS latency root cause was finally killed by moving CosyVoice to vLLM.
+
+**1. Remote mic died most turns = WebRTC ICE candidate pollution (THE intermittency).**
+The user views over a remote Tailscale browser; every session ended `TTFO {'count': 0}` with zero
+transcripts + `Media stream error; clearing track`. NOT bandwidth/TURN — the box advertised **9 host
+candidates** (Tailscale, Hyper-V, Radmin, LAN, APIPA); ICE checked a dead matrix, nominated a marginal
+pair, then `Consent to send expired` dropped the audio track. The Tailscale pair is verified reachable.
+**Fix:** `main.py::_restrict_ice_to_subnet()` monkeypatches `aioice.get_host_addresses` to keep only
+`WEBRTC_ICE_SUBNET` (default `100.64.0.0/10`, Tailscale's range) → 9 candidates collapse to 1 working one.
+
+**2. DEBUG log flood choking the realtime loop.** `log_setup.py` defaulted to DEBUG with the stdlib root
+at level 0 → aiortc logged every RTP packet through a stack-walking handler ON the asyncio media loop
+(41k lines / 10MB per 20min, and pressure that aggravated #1). **Fix:** intercept root → INFO + aiortc/
+aioice → WARNING. Verified 41,492 → 0 DEBUG lines.
+
+**3. Avatar lips trail the voice ~1.5-2s.** Measured the real cause: NOT the avatar render (server
+starts lips in 0.77s if fed fast) but **CosyVoice's first-chunk latency** — it delivered the opening
+~1.2s of speech over ~1.5-3s, a ~3s FIXED per-reply cost (the autoregressive LLM prefill+gen). Proven
+that lead-frames/burst-feed/voice-align all only move or freeze it, never fix it (do NOT retry those —
+`MUSETALK_LEAD_FRAMES=14` is load-bearing; lower freezes). The only real fix = shrink the gap:
+
+**→ CosyVoice2 LLM moved onto vLLM, in WSL Ubuntu on the Blackwell 5060 Ti. Measured TTFB 3.4s → ~1.1s**
+(and it now actually streams). The server runs in WSL (`cosyvllm` conda env, vllm 0.23 + torch 2.11/
+cu130); the Windows pipeline reaches it at the **WSL IP** (NOT localhost — WSL2's localhost relay buffers
+the audio stream ~2s). Full run instructions + the dozen bleeding-edge gotchas (model registration vLLM
+was missing, `embed_input_ids` rename, flashinfer/Triton JIT → conda compiler, torchcodec, env vars) are
+in the `project-visualllm-cosyvoice-vllm` memory and `E:\Claude\cosyvoice-local-tts\run_vllm_server.sh`.
+Revert: `.env COSYVOICE_URL=http://localhost:8001` + start the Windows CosyVoice server. Eager mode (no
+CUDA graphs) leaves some headroom. **Pending: the user's live-call confirmation of the felt improvement.**
+
+---
 
 ## ⭐ Current state (2026-06-21): MuseTalk female avatar + CosyVoice local TTS
 

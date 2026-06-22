@@ -1,6 +1,12 @@
 # VisualLLm — Full Project Plan & Progress
 
-_Last updated: 2026-06-10_
+_Last updated: 2026-06-10 (historical plan — see banner)_
+
+> **⚠️ Partly historical.** The current stack + state live in **`STATUS.md`** (source of
+> truth). Since this plan was written: avatar moved Simli → **MuseTalk** (default; Ditto
+> kept as fallback), TTS moved ElevenLabs → **CosyVoice2 on vLLM in WSL** (TTFB ~1.1s),
+> and the remote-mic / log-flood / lip-sync reliability issues were fixed (STATUS.md,
+> 2026-06-22). Read STATUS.md first; the phase narrative below is kept for history.
 
 ## 👉 WHERE WE ARE RIGHT NOW
 **Phase 1 (English) is DONE, and Phase 3's local MuseTalk avatar is now

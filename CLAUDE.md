@@ -14,7 +14,7 @@ A real-time **speech → STT → LLM → TTS → photoreal talking-head avatar**
 Multi-turn, streaming end-to-end. Goal: time-to-first-output **< 8 s**. Built on
 **Pipecat 1.3.0**, WebRTC to a browser at `/client`.
 
-**Current default stack (2026-06-21 — fully local TTS + avatar). See `STATUS.md` for the full
+**Current default stack (2026-06-22 — fully local TTS + avatar). See `STATUS.md` for the full
 state + the A/V-sync architecture decision (read it before touching sync).**
 
 | Stage | Service | Where |
@@ -22,8 +22,16 @@ state + the A/V-sync architecture decision (read it before touching sync).**
 | VAD | Silero (local) | pipeline |
 | STT | Deepgram nova-2 (`en-US`/`zh-TW` by `LANGUAGE`) | cloud |
 | LLM | OpenRouter (any model via `OPENROUTER_MODEL`) | cloud |
-| TTS | **CosyVoice2-0.5B** local streaming server (female zero-shot voice) | **`:8001`, separate repo `E:\Claude\cosyvoice-local-tts`, `tts` conda env** |
+| TTS | **CosyVoice2-0.5B** local streaming server (female zero-shot voice), **now on vLLM in WSL** (TTFB 3.4s→~1.1s; the Windows `tts`-env PyTorch server is the fallback) | **`:8001`, separate repo `E:\Claude\cosyvoice-local-tts`** |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | **`:8002`, `musetalk` conda env** |
+
+**TTS note (2026-06-22):** CosyVoice now runs its autoregressive LLM on **vLLM inside WSL Ubuntu**
+(`cosyvllm` conda env on the Blackwell 5060 Ti) — this cut first-chunk latency ~3.4s→~1.1s, the root
+cause of the avatar lip-lag. The pipeline reaches it via `COSYVOICE_URL` set to the **WSL IP**, NOT
+`localhost` (WSL2's localhost relay buffers the streaming audio ~2s). Run it with
+`bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh` in WSL. The original Windows `tts`-env
+PyTorch server is the fallback (set `COSYVOICE_URL=http://localhost:8001` + start it). Full build
+notes + gotchas: the `project-visualllm-cosyvoice-vllm` memory.
 
 Each stage is still a thin single-provider factory in `pipeline/stages/` chosen by `.env` — these
 are **deliberate fallback switches, not multi-provider branching**:
@@ -31,12 +39,22 @@ are **deliberate fallback switches, not multi-provider branching**:
 - `AVATAR` = `musetalk` (default) | `ditto` (the full-face TensorRT path, kept) | `none` (audio-only, client renders the face).
 
 Core `.env` knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECONDS`, `AVATAR`, `TTS_PROVIDER`,
-`MUSETALK_SYNC_MODE` (**`live`** = audio-master default, never freezes; do NOT use the locked
-`steady`/`prerender` modes on this shared GPU — see STATUS.md), `MUSETALK_FPS` (12),
-`MUSETALK_SIZE` (256 — shrinking it does NOT cut MuseTalk compute), `MUSETALK_LEAD_FRAMES`,
+`MUSETALK_SYNC_MODE` (**`steady`** = video-master, synced start, the user's pick and current
+default; `live` = audio-master, voice instant + lips trail ~0.75s, can never pause. The old
+**steady "screech" is FIXED** — it was pipecat discarding the partial audio buffer after a >3s
+render-stall gap (`BOT_VAD_STOP_FALLBACK_SECS`), see `docs/PROBLEMS-AND-FIXES.md` P3 +
+`main.py::_relax_bot_vad_stop_timeout`. Remaining steady tradeoff: under a long render stall the
+voice briefly **pauses** then resumes clean — switch to `live` if that pause is worse than the lip
+trail), `MUSETALK_FPS` (12),
+`MUSETALK_FEED_BURST_S` (1.0 — bursts the first 1s of a turn's audio un-paced so the renderer
+isn't starved at turn start; cut lip-start lag ~1.9s→~0.8s), `MUSETALK_END_TAIL_FRAMES` (ease-out
+neutral frames after speech), `MUSETALK_SIZE` (256 — shrinking it does NOT cut MuseTalk compute),
+`MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
-the shared GPU), `CLIENT_JITTER_BUFFER_MS` (150 local; raise only for a remote/WAN viewer), and
-the `DITTO_*` knobs when `AVATAR=ditto`. **Full reference: `WORKFLOW.md` §8.**
+the shared GPU), `CLIENT_JITTER_BUFFER_MS` (150 local; raise only for a remote/WAN viewer),
+`WEBRTC_ICE_SUBNET` (**`100.64.0.0/10`** = pin WebRTC ICE to the Tailscale interface; fixes the
+intermittent remote mic — `0` disables, see STATUS.md 2026-06-22), and the `DITTO_*` knobs when
+`AVATAR=ditto`. **Full reference: `WORKFLOW.md` §8.**
 
 ## Commands
 
@@ -44,10 +62,12 @@ There is **no build/lint/unit-test suite** — don't invent one. The real comman
 3 processes; `scripts/run.ps1` starts #2+#3 and propagates the avatar env from `.env`):
 
 ```bash
-# 1. CosyVoice TTS server — its OWN repo + `tts` conda env (NOT this repo's env)
-#    from E:\Claude\cosyvoice-local-tts :
-E:\miniconda3\envs\tts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 8001
-#    (COSYVOICE_PACE_RATE defaults to 1.3 in code; needs SSL_CERT_FILE=<certifi> on this box —
+# 1. CosyVoice TTS server (DEFAULT = vLLM in WSL, TTFB ~1.1s) — its OWN repo E:\Claude\cosyvoice-local-tts
+wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh"   # serves :8001 in WSL
+#    Then set .env COSYVOICE_URL to the WSL IP (NOT localhost — WSL2 relay buffers the stream): `wsl hostname -I`.
+#    FALLBACK = Windows PyTorch server (slower, TTFB ~3.4s), set COSYVOICE_URL=http://localhost:8001 :
+#      E:\miniconda3\envs\tts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 8001
+#    (COSYVOICE_PACE_RATE defaults to 1.3; the Windows server needs SSL_CERT_FILE=<certifi> —
 #     the tts/musetalk conda envs have a broken Windows cert store; see STATUS.md/memory.)
 
 # 2. MuseTalk avatar server — `musetalk` conda env (NOT the pipeline env), serves :8002
@@ -63,7 +83,11 @@ python -m pipeline.main                                             # http://loc
 # Verify every fragile import resolves WITHOUT keys/network (Pipecat drift check):
 python -m scripts.preflight
 
-# Avatar A/V test tooling (headless, no browser; STOP the pipeline first — server is single-client):
+# Avatar A/V test tooling (headless, no browser; close any /client tab first — server is single-client):
+# UNIFIED harness (PREFER THIS): one command = WebRTC probe + pipeline.log parse + offline capture ->
+# output/measure_report.json + docs/measure_data.js (docs/workflow-timeline.html auto-uses it on reload).
+python -m scripts.measure --offline-capture                        # full turn timeline + handoffs + metrics
+#   (the two tools below are what measure.py wraps; run them standalone only for one-off debugging)
 python -m scripts._webrtc_probe --mic output/q_ai.wav --lead 8     # drives a turn, records + metrics
 E:\miniconda3\envs\musetalk\python.exe -m local_services.musetalk_server._capture output/q_ai.wav  # offline mp4
 
@@ -111,11 +135,16 @@ the avatar immediately. `TtfoMeter` (`pipeline/metrics.py`) measures the gap fro
 chosen by `AVATAR`:
 - **MuseTalk (default):** `local_services/musetalk_video.py` (`MuseTalkVideoService`, the pipeline
   FrameProcessor) ↔ `local_services/musetalk_server/app.py` (FastAPI ws server, `musetalk` env).
-  Mouth-region lip-sync, no warmup, female portrait via `AVATAR_REF`. **A/V sync = `live`
-  (audio-master): the voice is forwarded immediately so it can NEVER freeze; lips are best-effort.**
-  The client feeds audio to the server REAL-TIME-PACED (`_feed_q`) so CosyVoice's faster-than-real-time
-  output can't build a video backlog. **Do NOT switch to the locked `steady`/`prerender` modes on the
-  shared GPU — they freeze the voice when the render stalls (see STATUS.md "A/V sync").**
+  Mouth-region lip-sync, no warmup, female portrait via `AVATAR_REF`. **A/V sync default = `steady`
+  (video-master): the voice is held and released locked to rendered frames for a synced start (the
+  user's pick).** `live` (audio-master) forwards the voice immediately (lips best-effort, ~0.75s
+  trail) and is the robust alternative. The client feeds audio to the server REAL-TIME-PACED
+  (`_feed_q`), except the first `MUSETALK_FEED_BURST_S` (1.0s) of each turn is burst un-paced so the
+  renderer isn't starved at turn start (cut lip-start lag ~1.9s→~0.8s). **The steady "screech" is
+  FIXED** (was pipecat discarding the partial audio buffer after a >3s render-stall gap →
+  odd-byte misalignment; `main.py::_relax_bot_vad_stop_timeout` raises `BOT_VAD_STOP_FALLBACK_SECS`).
+  Steady's only remaining tradeoff: under a long render stall the voice briefly pauses then resumes
+  clean — use `live` if that's worse than the lip trail. See `docs/PROBLEMS-AND-FIXES.md` P1–P3, P7.
 - **Ditto (fallback, `AVATAR=ditto`):** the full-face TensorRT path below.
 
 The Ditto detail that follows describes the **fallback** engine. Ditto and MuseTalk
@@ -193,6 +222,16 @@ it for *both* processes — `scripts/run.ps1` now propagates it from `.env` to b
 
 ## Environment constraints / gotchas (READ before debugging the avatar)
 
+- **MuseTalk: `cudnn.benchmark` MUST stay `False`** (`musetalk_server/app.py`). With it `True`,
+  cuDNN re-autotunes on the turn-START segment (different shape than mid-turn) → a **~16s GPU spike
+  on the FIRST segment of every turn** → lips start ~5s late + the render falls behind on long
+  replies ("audio ends, avatar keeps moving"). `False` removed it (steady-state per-frame time was
+  unchanged). See `docs/PROBLEMS-AND-FIXES.md` P1. Diagnose render-stage timing with `MUSETALK_PROFILE=1`.
+- **Judging audio garble: use a CONCATENATED WAV, never per-chunk RMS** — chunks aren't
+  sample-aligned, so a single chunk reads as "loud garbage" even when the stream is clean (this
+  cost hours; see PROBLEMS-AND-FIXES.md P3 method note). Env-gated WAV captures exist:
+  `MUSETALK_DOWNSTREAM_CAPTURE`, `COSYVOICE_DELIVERED_CAPTURE`, `COSYVOICE_HANDLE_AUDIO_PROBE`,
+  `COSYVOICE_CAPTURE_ALL` (all default OFF) → `output/cosy_noise/`.
 - **Compiler toolchain IS now installed** (2026-06-18: VS Build Tools MSVC 14.44 + Windows
   SDK 10.0.26100 + CUDA Toolkit 12.8.93; **driver kept at 591.44** — toolkit-only install).
   The two no-compiler workarounds below still stand (harmless, keep them):

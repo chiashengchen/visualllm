@@ -1,72 +1,57 @@
 # What To Do Next — VisualLLm
 
-Plain checklist for the next session. Do these in order.
-(Full context is in `STATUS.md`. The system already works — this is what's left.)
-
-> **NEW (2026-06-10):** the avatar now runs **locally** (Phase 3, MuseTalk on the
-> 5060 Ti) instead of Simli cloud. It needs **two processes** and a one-time
-> in-browser visual check. See step 0 and step 1.
+Plain checklist for the next session. Full context is in **`STATUS.md`** (source of
+truth) and **`WORKFLOW.md`** (end-to-end run + `.env` reference). The system works;
+this is what's left.
 
 ---
 
-## 0. Start the system (now TWO processes for the local avatar)
-- Open the project: `cd E:\Claude\VisualLLm`
-- **Start the avatar server FIRST** (its own conda env):
-  `local_services\musetalk_server\run_server.bat`
-  — wait for `Uvicorn running on http://0.0.0.0:8002`.
-- **Then start the pipeline:** `python -m pipeline.main`
-- In the RDP desktop browser, open `http://localhost:7860/client`
-- **Hard-refresh: Ctrl+Shift+R** (clears the old cached page)
-- Wait for the avatar's face to appear, then talk.
-- (To use the old Simli cloud avatar instead: set `AVATAR_PROVIDER=simli` in
-  `.env` — then you don't need the server.)
+## 0. Start the system (3 processes)
+- `cd E:\Claude\VisualLLm`
+- **TTS (CosyVoice on vLLM, in WSL):**
+  `wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh"`
+  — wait for `Uvicorn running on http://0.0.0.0:8001`. Then make sure `.env`
+  `COSYVOICE_URL` is the **WSL IP** (`wsl hostname -I`), **NOT localhost**.
+- **Avatar server + pipeline:** `.\scripts\run.ps1` (picks the engine from `AVATAR`).
+- Open `http://localhost:7860/client/` (**trailing slash**), allow the mic, wait for
+  the face, then talk. Remote: the Tailscale HTTPS URL in a native browser (never RDP).
 
-## 1. Check the loading screen works
-- When you open `/client`, you should see **"Loading the avatar…"** with a spinner.
-- It should stay until the avatar's face appears, then disappear.
-- ✅ If yes → done with this.
-- ❌ If it never disappears, or appears wrong → tell Claude; fix is in the bottom
-  of `pipeline/main.py` (the overlay script).
+## 1. Live-confirm this session's wins (the one open item)
+Three fixes landed 2026-06-22 and need a real call to confirm the *felt* result:
+- **Remote mic** should now hold across turns (ICE pinned to Tailscale). If it still
+  drops, watch the fresh pipeline log for the selected ICE pair.
+- **CosyVoice on vLLM** should make her start replying ~2s sooner AND tighten the lips
+  (frees the shared GPU). If TTS errors after a WSL reboot, the WSL IP changed —
+  `wsl hostname -I` and update `COSYVOICE_URL` (or set up WSL mirrored networking).
 
-## 2. Rotate the OpenRouter key (security)
-- The key was briefly saved in a shared file.
-- Go to openrouter.ai → Keys → delete the old key → create a new one.
-- Put the new key in `.env` (the line `OPENROUTER_API_KEY=...`). Do NOT put it
-  in `.env.example`.
+## 1b. Avatar-timing fixes landed 2026-06-22 evening (verified headless; confirm on a call)
+- **`cudnn.benchmark=False`** killed the ~16s first-segment render spike → lips start ~1s
+  (was ~5s), long replies keep up. **Burst-feed** (`MUSETALK_FEED_BURST_S=1.0`) cut lip-start
+  lag ~1.9s→~0.8s. Full writeup: `docs/PROBLEMS-AND-FIXES.md` P1/P2.
+- **✅ FIXED — steady-mode voice screech.** `MUSETALK_SYNC_MODE=steady` (synced start, the
+  default now) used to intermittently screech on long replies. Real cause: pipecat's output
+  transport discarded a partial **odd-byte** audio buffer (on a >3s render-stall gap AND on the
+  per-turn `TTSStoppedFrame`) → sample misalignment. Fixed by `musetalk_video._align_even` (every
+  downstream frame kept whole-sample via a 1-byte carry) + `main.py::_relax_bot_vad_stop_timeout`.
+  The dead frame-copy attempts + misleading per-chunk-RMS debug logs were removed. Full writeup +
+  regression test (`scripts/_screech_repro_test.py`): `docs/PROBLEMS-AND-FIXES.md` P3.
 
-## 3. Switch to Mandarin (zh-TW) — the real goal
-This is your research target. It's mostly a `.env` change:
-- Set `LANGUAGE=zh`
-- Set the LLM to a strong Chinese model, e.g.
-  `OPENROUTER_MODEL=qwen/qwen-2.5-7b-instruct` (or a deepseek model)
-- Set `ELEVENLABS_VOICE_ID` to a voice that sounds good in Mandarin
-- (Optional, better for Thailand latency + zh quality) switch STT/TTS to **Azure**:
-  `STT_PROVIDER=azure`, `TTS_PROVIDER=azure`, add `AZURE_SPEECH_KEY`,
-  `AZURE_SPEECH_REGION=eastasia`
-- Run `python -m scripts.preflight` to confirm keys load, then test.
+## 2. (Optional) Make the WSL TTS setup durable
+- The WSL IP changes on `wsl --shutdown`. Either switch WSL to **mirrored networking**
+  (then `localhost:8001` works and `.env` never needs editing), or script the IP lookup
+  into `run.ps1`.
+- (Optional perf) the vLLM engine runs **eager** (no CUDA graphs). Enabling graphs needs
+  more toolchain in WSL; could shave a bit more off TTFB.
 
-## 4. Local MuseTalk avatar — ✅ DONE, now just check it
-The avatar runs locally now (no more Simli cloud lag). The implementation,
-weights, conda env, and `.env` wiring are all done. What's left for you:
-- **Visual check (most important):** open `/client`, speak, and watch the lips.
-  - Do they move in time with the words? Judge **audio/video sync** — if the lips
-    clearly trail the voice (~0.5–0.8 s), tell Claude: the fix is to delay the
-    audio in `local_services/musetalk_video.py` so it's emitted with each video
-    frame (see the caveat in `PLAN.md`).
-- **Use your own face:** replace `assets/avatar.png` with a clear front-facing
-  portrait, then delete `local_services\musetalk_server\avatar_cache\` so it
-  re-prepares from the new photo. Restart the server.
-- If the avatar server won't start, the pipeline logs a clear "MuseTalk server
-  not reachable" warning telling you to start it first.
-
-## 5. (Optional) Push latency even lower
-- Try Gemini through Google's own API (Asia region) instead of OpenRouter (US),
-  to shorten the network hop. Needs a free Google AI Studio key.
+## 3. (Optional) Push latency / quality further
+- Try the LLM via Google's own API (Asia region) instead of OpenRouter (US) to shorten
+  the network hop.
+- `TTS_PROVIDER=elevenlabs` / `deepgram` are live fallbacks if CosyVoice ever misbehaves.
 
 ---
 
 ### Quick reference
-- Start: `python -m pipeline.main` → open `/client`
-- Check setup: `python -m scripts.preflight`
-- Measure speed: `python -m scripts.bench_latency --stage llm`
-- All settings live in `.env`. Full status in `STATUS.md`.
+- Run: `wsl ... run_vllm_server.sh` (TTS) → `.\scripts\run.ps1` (avatar + pipeline) → `/client/`
+- Check imports: `python -m scripts.preflight`
+- Revert TTS to the Windows PyTorch server: `.env COSYVOICE_URL=http://localhost:8001` + start it
+- All settings in `.env`. Full status in `STATUS.md`; full workflow in `WORKFLOW.md`.

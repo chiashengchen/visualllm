@@ -19,18 +19,20 @@ stage to fully finish.
 ## Architecture
 
 Built on **[Pipecat](https://github.com/pipecat-ai/pipecat)** — it wires every
-stage with streaming + barge-in built in. This is one pure stack (no
-provider-switching sprawl); the `.env` knobs are `LANGUAGE` (en/zh/th),
-`TTFO_TARGET_SECONDS`, `AVATAR` (`ditto`|`none`), and `CHARACTER_MODE`.
+stage with streaming + barge-in built in. One pure stack chosen by `.env`; each
+stage is a thin single-provider factory with deliberate fallback switches (not
+multi-provider branching). Core knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECONDS`,
+`AVATAR` (`musetalk`|`ditto`|`none`), `TTS_PROVIDER` (`cosyvoice`|`elevenlabs`|`deepgram`),
+`CHARACTER_MODE`, and `WEBRTC_ICE_SUBNET` (pin ICE to Tailscale for the remote mic).
 
 | Stage | Service |
 |-------|---------|
 | VAD / turn-taking | Silero (local) |
-| STT   | Deepgram (nova-2; `en-US` / `zh-TW` / `th` by `LANGUAGE`) |
-| LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) |
-| TTS   | ElevenLabs (flash_v2_5, multilingual) |
-| Avatar| Ditto — local lip-sync server on the GPU (5060 Ti); audio frame-clocked to the rendered video. Or `AVATAR=none` (client renders the face) |
-| Transport | WebRTC → browser |
+| STT   | Deepgram (nova-2; `en-US` / `zh-TW` / `th` by `LANGUAGE`) — cloud |
+| LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) — cloud |
+| TTS   | **CosyVoice2-0.5B**, local streaming server, female zero-shot voice — **runs on vLLM in WSL** (first-chunk latency ~1.1s; the Windows PyTorch server is the fallback). ElevenLabs / Deepgram Aura are cloud fallbacks via `TTS_PROVIDER` |
+| Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait. Or `AVATAR=ditto` (full-face TensorRT path, kept) / `none` (client renders the face) |
+| Transport | WebRTC → browser at `/client/` |
 
 ```
 pipeline/
@@ -48,27 +50,31 @@ scripts/
 ## Quick start
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate            # PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
 python -m scripts.preflight       # verify imports resolve BEFORE wiring keys
-
-copy .env.example .env            # then fill in keys (Deepgram, OpenRouter,
-                                  # ElevenLabs)
+copy .env.example .env            # then fill in keys (Deepgram, OpenRouter)
 ```
 
-The avatar runs as a **separate local server** (its own `ditto` conda env).
-Start it first, then the pipeline:
+The default stack is **3 processes** (TTS server + avatar server + pipeline). See
+**`STATUS.md`** (current state, source of truth), **`WORKFLOW.md`** (full run +
+`.env` reference), and **`docs/PROBLEMS-AND-FIXES.md`** (every bug found + how it was
+fixed — read before re-debugging the avatar/audio). Short version:
 
 ```bash
-conda run -n ditto python -m local_services.ditto_server.app   # GPU avatar server, :8002
-python -m pipeline.main                                        # serves /client
+# 1. CosyVoice TTS — vLLM in WSL (TTFB ~1.1s). Then set COSYVOICE_URL to the WSL IP (`wsl hostname -I`),
+#    NOT localhost (WSL2's localhost relay buffers the audio stream).
+wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh"   # :8001
+# 2 + 3. MuseTalk avatar server + pipeline (one script; picks the engine from AVATAR in .env)
+.\scripts\run.ps1
 ```
 
-Open the printed `http://localhost:7860/client` URL, allow the mic, **wait for
-the avatar face to appear**, then talk. The console logs a `[TTFO]` line per
-turn; the disconnect log prints the median/p95 summary.
+Open `http://localhost:7860/client/` (**trailing slash**), allow the mic, **wait for
+the avatar face to appear**, then talk. The console logs a `[TTFO]` line per turn;
+the disconnect log prints the median/p95 summary.
+
+> **Remote viewing** is over Tailscale (`tailscale serve` HTTPS URL) in a native
+> browser, never RDP. If the remote mic is flaky, that's WebRTC ICE candidate
+> pollution — `WEBRTC_ICE_SUBNET=100.64.0.0/10` pins ICE to Tailscale (see STATUS.md).
 
 > **Version note:** Pipecat's import paths shift between releases. If an import
 > errors, check `python -c "import pipecat; print(pipecat.__version__)"` — the
@@ -78,8 +84,7 @@ turn; the disconnect log prints the median/p95 summary.
 ## Switching to Mandarin
 
 Set `LANGUAGE=zh` in `.env` (and optionally an `OPENROUTER_MODEL` strong at
-Chinese). Deepgram switches to `zh-TW` and ElevenLabs flash_v2_5 speaks zh — no
-code changes.
+Chinese). Deepgram switches to `zh-TW` and CosyVoice speaks zh — no code changes.
 
 ---
 

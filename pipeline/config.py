@@ -142,9 +142,9 @@ class Config:
         video_out_is_live=False so pipecat honors the per-frame sync; when off the video
         free-runs (the old desync). Default on."""
         if self.avatar_mode == "musetalk":
-            # live (default) = audio-master => free-running transport (is_live=True). Only the
-            # video-master modes pin video to audio (is_live=False).
-            mode = (_get("MUSETALK_SYNC_MODE", "live") or "live").lower()
+            # steady (default) = video-master => non-live transport (is_live=False), pins video to
+            # audio. live = audio-master => free-running transport (is_live=True).
+            mode = (_get("MUSETALK_SYNC_MODE", "steady") or "steady").lower()
             if mode not in ("steady", "prerender"):
                 return False
             env = _get("MUSETALK_SYNC_WITH_AUDIO", "1")

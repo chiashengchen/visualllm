@@ -93,7 +93,7 @@ class MuseTalkVideoService(FrameProcessor):
         #     sustain real-time (MuseTalk shares the GPU with CosyVoice).
         #   steady / prerender = VIDEO-MASTER (sync_with_audio pinning) -- tight sync ONLY when the
         #     render keeps up; on a slow GPU they make the voice lag. Kept for fast-GPU setups.
-        self._mode = (os.getenv("MUSETALK_SYNC_MODE", "live") or "live").lower()
+        self._mode = (os.getenv("MUSETALK_SYNC_MODE", "steady") or "steady").lower()
         self._sync = self._mode in ("steady", "prerender") and (
             os.getenv("MUSETALK_SYNC_WITH_AUDIO", "1") or "1").lower() in ("1", "true", "yes", "on")
         self._lead_s = float(os.getenv("MUSETALK_SYNC_LEAD_S", "0.0"))
@@ -121,6 +121,13 @@ class MuseTalkVideoService(FrameProcessor):
         # the server paced to real-time, keeping the render in lockstep with playback.
         self._feed_q: asyncio.Queue = asyncio.Queue()
         self._feed_task: asyncio.Task | None = None
+        # Startup-latency fix: burst the first MUSETALK_FEED_BURST_S of a turn's audio to the
+        # server WITHOUT real-time pacing, so it can render the opening frames immediately. The
+        # lips otherwise start ~2s late because a fully real-time-paced feed STARVES the renderer
+        # at turn start (it can't fill its lead-prime + first segment until audio trickles in).
+        # After the burst we resume real-time pacing so no backlog builds (the original guarantee).
+        self._burst_s = float(os.getenv("MUSETALK_FEED_BURST_S", "1.0"))
+        self._burst_remaining = 0.0
 
         # --- per-turn sync state ---
         self._lock = asyncio.Lock()
@@ -132,6 +139,24 @@ class MuseTalkVideoService(FrameProcessor):
         self._video_active = False    # between video_start and video_end
         self._unsynced = False        # fallback engaged this turn
         self._fallback_task: asyncio.Task | None = None
+
+        # DEBUG (MUSETALK_DOWNSTREAM_CAPTURE=1): save every audio frame this service pushes
+        # DOWNSTREAM (post steady buffer/release, PRE transport) to a session wav -- boundary 2.5,
+        # to bisect whether the steady-mode screech is created HERE (our release code) or later
+        # in pipecat's transport. Compared against the transport-output capture in main.py.
+        self._dcap = (os.getenv("MUSETALK_DOWNSTREAM_CAPTURE", "0").lower()
+                      in ("1", "true", "yes", "on"))
+        self._dcap_wf = None
+
+        # --- per-turn A/V timing instrumentation (logs audio-vs-avatar offset + lip drift) ---
+        self._t_audio_first: float | None = None   # loop.time() of first voice chunk this turn
+        self._t_vid_first: float | None = None      # loop.time() of first rendered frame this turn
+        self._t_vid_last: float | None = None
+        self._vframes = 0                           # real lip-synced frames this turn
+        self._aud_dur = 0.0                         # seconds of voice this turn
+        self._last_offset_log = 0.0                 # throttle for the continuous offset trace
+        self._odd_carry = b""                       # anti-screech: dangling odd byte carried between
+        #   downstream audio frames so the PCM stays whole-sample (see _align_even)
 
     # --- connection lifecycle ---------------------------------------------
     async def _connect(self):
@@ -169,8 +194,14 @@ class MuseTalkVideoService(FrameProcessor):
                 if kind == "audio":
                     pcm, dur = payload
                     await self._ws.send(pcm)
-                    await asyncio.sleep(dur)        # pace to real-time
+                    if self._burst_remaining > 0:
+                        self._burst_remaining -= dur   # BURST: skip the pace so the renderer can
+                        #   start the opening frames immediately (kills the ~2s startup starve)
+                    else:
+                        await asyncio.sleep(dur)        # then pace to real-time (no backlog)
                 else:
+                    if kind == "speech_start":
+                        self._burst_remaining = self._burst_s   # reset the burst budget per turn
                     await self._ws.send(json.dumps({"type": kind}))
             except asyncio.CancelledError:
                 break
@@ -225,6 +256,24 @@ class MuseTalkVideoService(FrameProcessor):
     # --- sync core --------------------------------------------------------
     async def _on_frame(self, img: bytes):
         """A rendered RGB frame from the server."""
+        if self._video_active:   # count frames + trace the live lips-vs-voice offset
+            now = asyncio.get_running_loop().time()
+            if self._t_vid_first is None:
+                self._t_vid_first = now
+            self._t_vid_last = now
+            self._vframes += 1
+            # Continuous (delivery-side) offset: real-time voice elapsed vs lip-video delivered.
+            # + = lips behind the voice, - = lips ahead. Shows the swing within a turn (the burst
+            # can push the lips AHEAD after they start behind). NOTE: this is delivery to the
+            # transport, not browser playout (the jitter buffer smooths some of it).
+            if self._t_audio_first is not None and now - self._last_offset_log >= 1.0:
+                self._last_offset_log = now
+                voice_s = now - self._t_audio_first
+                video_s = self._vframes / self._fps
+                off = voice_s - video_s
+                tag = f"{off:+0.2f}s behind" if off > 0.05 else (
+                    f"{-off:0.2f}s AHEAD" if off < -0.05 else "in step")
+                logger.info(f"[avatar offset] {voice_s:0.1f}s in: lips {tag}")
         if not self._sync:
             await self.push_frame(
                 OutputImageRawFrame(image=img, size=self._size, format="RGB"),
@@ -259,6 +308,7 @@ class MuseTalkVideoService(FrameProcessor):
         elif kind == "video_end":
             await self._advance()       # flush whatever is buffered (prerender: the whole reply)
             await self._drain_audio()   # release the turn's trailing voice
+            self._log_turn_timing()
             self._video_active = False
 
     async def _advance(self):
@@ -346,6 +396,33 @@ class MuseTalkVideoService(FrameProcessor):
         self._unsynced = False
         self._audio_sent_s = 0.0
         self._video_s = 0.0
+        self._t_audio_first = None
+        self._t_vid_first = None
+        self._t_vid_last = None
+        self._vframes = 0
+        self._aud_dur = 0.0
+        self._last_offset_log = 0.0
+        self._odd_carry = b""
+
+    def _log_turn_timing(self):
+        """Log this turn's audio-vs-avatar timing: how long after the voice the lips started,
+        and how far the video fell behind by the end (the live lip drift). Best-effort."""
+        if self._t_vid_first is None or self._t_audio_first is None:
+            return
+        startup = self._t_vid_first - self._t_audio_first
+        vid_dur = self._vframes / self._fps if self._fps else 0.0
+        span = (self._t_vid_last - self._t_vid_first) if self._t_vid_last else 0.0
+        eff_fps = self._vframes / span if span > 0 else 0.0
+        drift = self._aud_dur - vid_dur
+        # The perceived lip lag is dominated by how late the lips START after the voice
+        # (startup), plus any accumulating drift over the turn. Both must be small to be in step.
+        verdict = "LIPS BEHIND" if (startup > 0.15 or drift > 0.15) else "in step"
+        logger.info(
+            f"[avatar timing] lips start +{startup:0.2f}s after voice | "
+            f"audio {self._aud_dur:0.2f}s video {vid_dur:0.2f}s "
+            f"({self._vframes} frames, {eff_fps:0.1f} fps) | "
+            f"end drift +{drift:0.2f}s -> {verdict}"
+        )
 
     # --- fallback (marker-less server / lost markers) ---------------------
     def _arm_fallback(self):
@@ -376,6 +453,53 @@ class MuseTalkVideoService(FrameProcessor):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _cap_write(self, frame) -> None:
+        """Append a downstream-pushed audio frame to the boundary-2.5 session wav."""
+        try:
+            import time
+            import wave
+            if self._dcap_wf is None:
+                sr = getattr(frame, "sample_rate", 24000) or 24000
+                p = (os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "output", "cosy_noise", f"_musetalk_out_{time.strftime('%H%M%S')}.wav"))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                wf = wave.open(p, "wb"); wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+                self._dcap_wf = wf
+                logger.info(f"MuseTalk downstream-audio capture ON -> {os.path.basename(p)} (boundary 2.5).")
+            self._dcap_wf.writeframes(frame.audio)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _align_even(self, frame: TTSAudioRawFrame) -> None:
+        """SAMPLE-ALIGNMENT GUARD (the real steady-screech root-cause fix).
+
+        The screech was an ODD-byte misalignment: pipecat's output transport clears its internal
+        `_audio_buffer` (bytearray()) on `_bot_stopped_speaking` -- fired by a >3s render-stall gap
+        OR by the per-turn TTSStoppedFrame. If the bytes accumulated there are an ODD count, the
+        discard shifts every following int16 sample by half a sample -> loud broadband noise to the
+        end of the turn. The odd count comes from CosyVoice's LAST chunk per utterance, which
+        `iter_chunked` can hand back at an odd length.
+
+        Fix at the source of truth: make EVERY audio frame we push downstream an even (whole-sample)
+        byte count, carrying any dangling odd byte to the next frame so the PCM stream stays exactly
+        contiguous. Then the transport's running total is always even, so any buffer-clear can only
+        ever drop an even (whole-sample) gap -- at worst an inaudible click, NEVER the screech.
+        Carry is per-connection and reset each turn (a dangling final byte is inaudible)."""
+        data = self._odd_carry + frame.audio
+        if len(data) & 1:
+            self._odd_carry = data[-1:]
+            data = data[:-1]
+        else:
+            self._odd_carry = b""
+        frame.audio = data
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSAudioRawFrame):
+            self._align_even(frame)   # keep the downstream PCM whole-sample (anti-screech guard)
+        if self._dcap and direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSAudioRawFrame):
+            self._cap_write(frame)   # boundary-2.5 WAV (concatenated; judge garble from this, not per-chunk RMS)
+        await super().push_frame(frame, direction)
+
     # --- frame processing --------------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -405,6 +529,9 @@ class MuseTalkVideoService(FrameProcessor):
             sr = getattr(frame, "sample_rate", MUSETALK_SR) or MUSETALK_SR
             ch = getattr(frame, "num_channels", 1) or 1
             dur = (len(frame.audio) // (2 * ch)) / sr
+            if self._t_audio_first is None:   # first voice chunk of the turn = audio start
+                self._t_audio_first = asyncio.get_running_loop().time()
+            self._aud_dur += dur
             # ALWAYS feed the server REAL-TIME-PACED (via _feed_q) so the renderer can't build a
             # backlog from CosyVoice's faster-than-real-time output (the "voice finishes but the
             # avatar keeps going" lag). Pacing keeps the server's queue ~empty either mode.
@@ -420,6 +547,10 @@ class MuseTalkVideoService(FrameProcessor):
                 # READINESS-GATED (steady): hold the voice and release it locked to the real
                 # rendered frames -- the voice waits until the avatar is ready, then they play
                 # together. No drift, no end cut. (See _advance / video_clock handling.)
+                # The mid-speech "screech" that steady used to hit is NOT a held-frame problem --
+                # it was pipecat discarding a partial (odd) audio buffer; fixed by _align_even (every
+                # downstream frame kept whole-sample) + the BOT_VAD_STOP_FALLBACK_SECS raise in
+                # main.py. So we just buffer the frame as-is here.
                 self._audio_clock_s += dur
                 async with self._lock:
                     self._abuf.append((self._audio_clock_s, frame, direction))

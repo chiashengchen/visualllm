@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VisualLLm — GPU usage timeline (CosyVoice vs MuseTalk)</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#111824; --ink:#e8edf4; --mut:#9fb0c3; --dim:#647288;
+    --grid:#1c2533; --line:#22304a;
+    --cosy:#f472b6; --muse:#a78bfa; --both:#fbbf24; --idle:#3a4658; --mem:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,Arial}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 18px}
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:1.3px;color:var(--mut);margin:30px 0 12px}
+  a{color:#7cc0ff;text-decoration:none} a:hover{text-decoration:underline}
+  code{background:#0c0f15;border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--mut)}
+  .chartbox{background:#0e1623;border:1px solid var(--line);border-radius:14px;padding:10px 8px;overflow-x:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:14px 2px}
+  .lg{display:inline-flex;align-items:center;gap:8px;color:var(--mut);font-size:13px}
+  .lg .sw{width:14px;height:10px;border-radius:3px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:6px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .card .k{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;gap:7px}
+  .card .k .sw{width:11px;height:11px;border-radius:3px}
+  .card .v{font-size:24px;margin:5px 0 0}
+  .card .v small{font-size:13px;color:var(--mut)}
+  .card .n{color:var(--mut);font-size:12.5px;margin-top:3px}
+  .note{background:linear-gradient(180deg,#101a2a,#0d1421);border:1px solid var(--line);
+    border-radius:12px;padding:14px 16px;color:var(--mut);margin-top:8px}
+  .note b{color:var(--ink)}
+  text{font-family:ui-monospace,Consolas,monospace}
+  footer{margin-top:30px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--grid);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GPU usage over time — CosyVoice vs MuseTalk</h1>
+  <p class="sub">One shared <span id="m-gpu">GPU</span>. Sampled live while driving each service
+  alone, then both at once. Watch the shapes: <b style="color:var(--cosy)">CosyVoice</b> is a
+  <i>sustained</i> block; <b style="color:var(--muse)">MuseTalk</b> is <i>spiky</i> (one burst per
+  frame, idle between); <b style="color:var(--both)">both together</b> collides at the top but the
+  <i>average</i> still leaves room.</p>
+
+  <div class="legend">
+    <span class="lg"><span class="sw" style="background:var(--cosy)"></span>CosyVoice TTS (synthesis)</span>
+    <span class="lg"><span class="sw" style="background:var(--muse)"></span>MuseTalk (avatar render)</span>
+    <span class="lg"><span class="sw" style="background:var(--both)"></span>Both at once</span>
+    <span class="lg"><span class="sw" style="background:var(--idle)"></span>Idle</span>
+    <span class="lg"><span class="sw" style="background:var(--mem)"></span>GPU memory (right axis)</span>
+    <span class="lg">— — avg per phase</span>
+  </div>
+
+  <div class="chartbox"><div id="chart"></div></div>
+
+  <h2>Per-phase summary</h2>
+  <div class="cards" id="cards"></div>
+
+  <div class="note" id="howto"></div>
+
+  <footer>
+    Reproduce: <code>python output/_gpu_timeline.py</code> (writes <code>docs/gpu_timeline.js</code>,
+    this page auto-uses it). Per-process GPU% isn't available on Windows (WDDM), so these are global
+    GPU% under isolated single-service load. Companion: <a href="./workflow-timeline.html">workflow-timeline.html</a>.
+  </footer>
+</div>
+
+<script src="./gpu_timeline.js" onerror="void 0"></script>
+<script>
+const D = window.GPUTL;
+const PC = {"idle":getC('--idle'),"CosyVoice TTS":getC('--cosy'),
+            "MuseTalk render":getC('--muse'),"BOTH (TTS+render)":getC('--both')};
+function getC(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+
+if(!D){
+  document.getElementById('chart').innerHTML =
+    '<p style="color:#9fb0c3;padding:20px">No data yet — run <code>python output/_gpu_timeline.py</code> first.</p>';
+}else{
+  document.getElementById('m-gpu').textContent = D.meta.gpu || 'GPU';
+  buildChart(); buildCards(); buildHowto();
+}
+
+function buildChart(){
+  const S = D.samples, P = D.phases;
+  const dur = D.meta.dur_s || (S.length? S[S.length-1].t : 1);
+  const PXPS = Math.max(16, Math.min(26, 1100/dur));
+  const mL=46, mR=58, mT=30, mB=30, plotW=dur*PXPS, plotH=360;
+  const W=mL+plotW+mR, H=mT+plotH+mB;
+  const X = t => mL + t*PXPS;
+  const Yu = u => mT + plotH - (u/100)*plotH;
+  const memMax = 16384;
+  const Ym = m => mT + plotH - (m/memMax)*plotH;
+
+  let s = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`;
+  // phase background bands + labels
+  for(const p of P){
+    const x0=X(p.t0), w=(p.t1-p.t0)*PXPS, c=PC[p.label]||getC('--idle');
+    s+=`<rect x="${x0}" y="${mT}" width="${w}" height="${plotH}" fill="${c}" opacity="0.07"/>`;
+    if(p.label!=="idle" && w>40)
+      s+=`<text x="${x0+w/2}" y="${mT-10}" fill="${c}" font-size="12" text-anchor="middle">${p.label}</text>`;
+  }
+  // y grid (util)
+  for(let u=0;u<=100;u+=25){
+    s+=`<line x1="${mL}" y1="${Yu(u)}" x2="${mL+plotW}" y2="${Yu(u)}" stroke="${getC('--grid')}"/>`;
+    s+=`<text x="${mL-8}" y="${Yu(u)+4}" fill="${getC('--dim')}" font-size="11" text-anchor="end">${u}%</text>`;
+  }
+  // x ticks every 5s
+  for(let t=0;t<=dur;t+=5){
+    s+=`<text x="${X(t)}" y="${mT+plotH+18}" fill="${getC('--dim')}" font-size="11" text-anchor="middle">${t}s</text>`;
+  }
+  // right mem axis
+  for(let g=0;g<=16;g+=4){
+    const mib=g*1024;
+    s+=`<text x="${mL+plotW+8}" y="${Ym(mib)+4}" fill="${getC('--mem')}" font-size="11" opacity="0.8">${g}GB</text>`;
+  }
+  // util area, colored per phase segment
+  for(const p of P){
+    const pts=S.filter(d=>d.t>=p.t0 && d.t<=p.t1);
+    if(pts.length<2) continue;
+    const c=PC[p.label]||getC('--idle');
+    let d=`M ${X(pts[0].t)} ${Yu(0)}`;
+    for(const pt of pts) d+=` L ${X(pt.t)} ${Yu(pt.u)}`;
+    d+=` L ${X(pts[pts.length-1].t)} ${Yu(0)} Z`;
+    s+=`<path d="${d}" fill="${c}" opacity="${p.label==='idle'?0.18:0.42}"/>`;
+    // stroke top
+    let l=`M `+pts.map(pt=>`${X(pt.t)} ${Yu(pt.u)}`).join(' L ');
+    s+=`<path d="${l}" fill="none" stroke="${c}" stroke-width="${p.label==='idle'?0.8:1.4}" opacity="0.95"/>`;
+    // avg dashed line
+    if(p.label!=='idle'){
+      s+=`<line x1="${X(p.t0)}" y1="${Yu(p.avg)}" x2="${X(p.t1)}" y2="${Yu(p.avg)}" stroke="${c}" stroke-width="1.4" stroke-dasharray="6 4"/>`;
+      s+=`<text x="${X(p.t1)-4}" y="${Yu(p.avg)-5}" fill="${c}" font-size="11" text-anchor="end">avg ${p.avg}%</text>`;
+    }
+  }
+  // memory line (over everything, thin)
+  let ml=`M `+S.map(d=>`${X(d.t)} ${Ym(d.m)}`).join(' L ');
+  s+=`<path d="${ml}" fill="none" stroke="${getC('--mem')}" stroke-width="1.2" opacity="0.55"/>`;
+  s+=`</svg>`;
+  document.getElementById('chart').innerHTML=s;
+}
+
+function buildCards(){
+  const el=document.getElementById('cards');
+  for(const p of D.phases.filter(p=>p.label!=='idle')){
+    const c=PC[p.label]||'#888';
+    const card=document.createElement('div'); card.className='card';
+    card.innerHTML=`<div class="k"><span class="sw" style="background:${c}"></span>${p.label}</div>`+
+      `<div class="v">${p.avg}% <small>avg</small></div>`+
+      `<div class="n">peak ${p.max}% · window ${(p.t1-p.t0).toFixed(1)}s</div>`;
+    el.appendChild(card);
+  }
+}
+
+function buildHowto(){
+  const cosy=D.phases.find(p=>p.label==='CosyVoice TTS')||{};
+  const muse=D.phases.find(p=>p.label==='MuseTalk render')||{};
+  const both=D.phases.find(p=>p.label==='BOTH (TTS+render)')||{};
+  document.getElementById('howto').innerHTML =
+    `<b>How to read it.</b> GPU% is "fraction of time busy," sampled ${D.meta.samples} times over `+
+    `${D.meta.dur_s}s. <b style="color:var(--cosy)">CosyVoice</b> stays a fat block (~${cosy.avg}% avg, `+
+    `peak ${cosy.max}%) — it generates speech continuously. <b style="color:var(--muse)">MuseTalk</b> is a `+
+    `picket fence (~${muse.avg}% avg but peak ${muse.max}%): one spike per rendered frame (12 fps), idle between — `+
+    `that's why peak ≫ average. <b style="color:var(--both)">Both together</b> (~${both.avg}% avg, peak ${both.max}%) `+
+    `tops out at 100% only when their spikes collide; the rest of the time there's headroom, which is why they `+
+    `coexist and the voice never starves — the lips just slip a hair when the two reach for the GPU at once.`;
+}
+</script>
+</body>
+</html>

@@ -143,8 +143,11 @@ class MuseTalkEngine:
 
         self.torch = torch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # Fixed input shapes -> let cudnn autotune; allow TF32 for the fp32 bits.
-        torch.backends.cudnn.benchmark = True
+        # NOTE: cudnn.benchmark was True ("fixed shapes"), but profiling proved the turn-START
+        # segment has a DIFFERENT shape than mid-turn segments, so benchmark RE-AUTOTUNED the
+        # first segment of EVERY turn -> ~16s GPU spike on this shared GPU (the late-start/stall).
+        # False stops the per-turn re-tune; steady segments stay ~real-time. (allow TF32 kept.)
+        torch.backends.cudnn.benchmark = False
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         logger.info(f"Loading MuseTalk v1.5 models on {self.device} …")
@@ -174,6 +177,7 @@ class MuseTalkEngine:
         self._neutral = self._frame_to_bytes(self.frame_cycle[0])
         self._build_idle_loop()
         self._ready = True
+        self._warmup()   # pay the first-inference cost NOW so the first real turn isn't cold
         logger.info(
             f"MuseTalk ready. {len(self.frame_cycle)} base frame(s) prepared; "
             f"{len(self._idle_loop)} idle frame(s)."
@@ -323,6 +327,32 @@ class MuseTalkEngine:
                 out.append((x1, y1, x2, y2))
         del fa  # free the landmark model; the realtime loop never needs it
         return out
+
+    def _warmup(self):
+        """Run a couple of dummy segments through the full render path at load time.
+
+        The FIRST real inference otherwise pays one-time costs -- cuDNN autotune
+        (benchmark.True), CUDA kernel compilation, lazy allocations -- which made the
+        first turn after a server start render far below fps (the "cold first-turn stall":
+        audio finishes, the avatar plays its backlog out for seconds afterward). Doing it
+        here, on silent audio we discard, means the user's first real turn is already warm.
+        Best-effort: a warmup failure must NEVER block the server from coming up.
+        """
+        import time as _t
+        try:
+            spf = self.samples_per_frame(self.fps)
+            seg = np.zeros(spf * SEG_FRAMES, dtype=np.float32)   # ~SEG_FRAMES of silence
+            t0 = _t.time()
+            n = 0
+            for _ in range(2):   # 1st call compiles/autotunes; 2nd confirms the warm path
+                n = len(self.render_segment(seg))
+            self.idx = 0   # undo the cursor advance so real turns start from the rest pose
+            if self.torch.cuda.is_available():
+                self.torch.cuda.synchronize()
+            logger.info(f"MuseTalk warmup done in {_t.time()-t0:0.1f}s ({n} frames/segment).")
+        except Exception:  # noqa: BLE001 -- warmup is best-effort; never block startup
+            logger.exception("MuseTalk warmup failed (non-fatal; first turn may be cold).")
+            self.idx = 0
 
     # --- realtime inference ----------------------------------------------
     def samples_per_frame(self, fps: int) -> int:

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisualLLm — Interactive System Workflow (node & arrow)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  tailwind.config = { theme: { extend: {
+    colors: {
+      bg:'#0a0e14', panel:'#141b26', panel2:'#1a2330', line:'#26303f',
+      ink:'#e8edf4', ink2:'#9fb0c3', ink3:'#647288',
+      mic:'#60a5fa', stt:'#22d3ee', llm:'#fbbf24', tts:'#f472b6', av:'#a78bfa', out:'#34d399', err:'#f87171',
+    },
+    fontFamily:{
+      mono:['SF Mono','ui-monospace','Cascadia Code','Consolas','monospace'],
+      sans:['Inter','-apple-system','Segoe UI','Roboto','system-ui','sans-serif'],
+    }
+  }}}
+</script>
+<style>
+  body{
+    background:
+      radial-gradient(1100px 600px at 12% -8%, #16203010, transparent),
+      radial-gradient(900px 500px at 100% 0%, #1b162e18, transparent),
+      #0a0e14;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* graph canvas */
+  #graph{overflow:auto}
+  #graph svg{max-width:none!important;height:auto}
+  /* clickable phase nodes get a pointer + subtle lift */
+  #graph .node[id*="-P"][id*="hdr"]{cursor:pointer}
+  .clickable{cursor:pointer}
+  .clickable:hover{filter:brightness(1.12)}
+  /* info panel scrollbar */
+  .scroller::-webkit-scrollbar{width:8px}
+  .scroller::-webkit-scrollbar-thumb{background:#26303f;border-radius:8px}
+</style>
+</head>
+<body class="font-sans text-ink antialiased">
+<div class="max-w-[1400px] mx-auto px-4 sm:px-8 pt-9 pb-20">
+
+  <!-- header -->
+  <header class="mb-6">
+    <div class="font-mono text-[11px] tracking-[0.22em] uppercase text-ink3 mb-3">VisualLLm · Interactive System Workflow · node &amp; arrow</div>
+    <h1 class="text-3xl sm:text-4xl font-bold leading-tight tracking-tight mb-2">
+      One spoken turn, as a graph:
+      <span class="bg-gradient-to-r from-mic via-av to-tts bg-clip-text text-transparent">mic → LLM → talking-head → back</span>
+    </h1>
+    <p class="text-ink2 text-[15px] max-w-3xl">A streaming pipeline on <b class="text-ink">Pipecat 1.3.0</b>
+    over <b class="text-ink">WebRTC</b>. <b class="text-ink">Click any phase node</b> (the bold boxes)
+    to expand its subprocess inline — the graph reflows. Click any node to see its detail on the right.
+    Default stack: <b class="text-ink">CosyVoice TTS + MuseTalk avatar</b>, live/audio-master A/V sync.</p>
+
+    <!-- controls -->
+    <div class="flex flex-wrap items-center gap-2.5 mt-5">
+      <button id="expandAll"   class="font-mono text-[12px] px-3.5 py-2 rounded-lg bg-panel2 border border-line hover:border-ink3 transition">⊕ Expand all</button>
+      <button id="collapseAll" class="font-mono text-[12px] px-3.5 py-2 rounded-lg bg-panel2 border border-line hover:border-ink3 transition">⊖ Collapse all</button>
+      <button id="reset"       class="font-mono text-[12px] px-3.5 py-2 rounded-lg bg-panel2 border border-line hover:border-ink3 transition">↺ Reset</button>
+      <span class="text-ink3 text-[12px] font-mono ml-1">TTFO median 1.97 s · p95 2.86 s · target &lt; 8 s</span>
+    </div>
+  </header>
+
+  <!-- main: graph + info panel -->
+  <div class="grid lg:grid-cols-[1fr_320px] gap-5 items-start">
+    <div class="rounded-2xl bg-panel/60 border border-line p-3 sm:p-4">
+      <div id="graph" class="min-h-[360px]"></div>
+    </div>
+
+    <aside id="info" class="rounded-2xl bg-panel border border-line p-4 lg:sticky lg:top-5 scroller lg:max-h-[88vh] overflow-auto">
+      <div class="font-mono text-[10.5px] uppercase tracking-wider text-ink3 mb-2">Detail</div>
+      <div id="infoBody" class="text-ink2 text-[13.5px] leading-relaxed">
+        Click a node in the graph to see what it does, its source file, and its cost.
+      </div>
+    </aside>
+  </div>
+
+  <!-- streaming-overlap note -->
+  <div class="mt-5 rounded-xl border border-dashed border-llm/40 bg-llm/5 px-4 py-3 text-[13px] text-ink2">
+    <b class="text-llm">Streaming overlap.</b> The LLM's first sentence reaches TTS before the full
+    answer exists, and TTS's first chunk reaches the avatar immediately — so
+    <b class="text-ink">TTFO ≈ VAD + LLM</b>, not the sum of every stage.
+  </div>
+
+  <!-- error graph -->
+  <section class="mt-9">
+    <h2 class="text-lg font-semibold tracking-tight mb-1">Error &amp; troubleshooting paths</h2>
+    <p class="text-ink2 text-[13px] mb-3">Failure modes we've actually hit (<span class="font-mono text-ink3">WORKFLOW.md §10</span> / <span class="font-mono text-ink3">STATUS.md</span>) — symptom → fix.</p>
+    <div class="rounded-2xl bg-panel/60 border border-line p-3 sm:p-4 overflow-auto">
+      <div id="errgraph"></div>
+    </div>
+  </section>
+
+  <footer class="mt-10 text-ink3 text-[11.5px] text-center font-mono leading-relaxed">
+    Cross-checked against pipeline/stages/*.py · pipeline/main.py · pipeline/metrics.py · STATUS.md · WORKFLOW.md (2026-06-22)<br>
+    Default stack: CosyVoice TTS (:8001) + MuseTalk avatar (:8002) · live/audio-master sync · node-and-arrow rebuild of the interactive workflow
+  </footer>
+</div>
+
+<script>
+/* ============================================================
+   single source of truth — phases, subprocess steps, fallbacks
+   ============================================================ */
+const COLORS = { mic:'#60a5fa', stt:'#22d3ee', llm:'#fbbf24', tts:'#f472b6', av:'#a78bfa', out:'#34d399' };
+
+const phases = [
+  { id:'P1', key:'mic', label:'① Capture &<br/>Ingestion', cost:'~50–100 ms RTT',
+    detail:'Browser → pipeline. The user speaks; WebRTC carries the mic up and Silero VAD decides when the turn ends.',
+    steps:[
+      ['P1a','Browser mic (WebRTC)','User speaks into <code>/client/</code>; live audio streams up.','client bundle','live audio'],
+      ['P1b','transport.input()','Pipecat <code>SmallWebRTCTransport</code> — audio frames enter the graph; owns the peer connection.','pipeline/main.py','~50–100 ms RTT'],
+      ['P1c','ICE → Tailscale 100.64/10','<code>_restrict_ice_to_subnet</code> pins ICE candidates (<code>WEBRTC_ICE_SUBNET</code>) — fixes the "works sometimes" remote mic from candidate pollution.','pipeline/main.py',''],
+      ['P1d','Silero VAD (local)','Always-on; <code>stop_secs</code> hold detects you stopped → ends the turn, fires STT final, enables barge-in.','pipeline/stages/vad.py','0.5 s hold'],
+    ], forks:[] },
+
+  { id:'P2', key:'stt', label:'② Listen / STT', cost:'~0.1–0.3 s',
+    detail:'Speech → text. Streams your mic to Deepgram and emits a final transcript when VAD marks the turn done.',
+    steps:[
+      ['P2a','Stream → Deepgram nova-2','Audio streams over ws as you speak; needs <code>DEEPGRAM_API_KEY</code>.','pipeline/stages/stt.py','streaming'],
+      ['P2b','Language by LANGUAGE','<code>en-US</code> / <code>zh-TW</code> / <code>th</code> via the <code>LANGUAGE</code> env.','pipeline/config.py',''],
+      ['P2c','Interim partials + format','Live interim transcripts with punctuation + capitalization.','pipeline/stages/stt.py',''],
+      ['P2d','Final TranscriptionFrame','VAD stop → final transcript frame emitted.','pipeline/stages/stt.py',''],
+    ], forks:[] },
+
+  { id:'P3', key:'llm', label:'③ Think /<br/>Context + LLM', cost:'~0.9–1.4 s ⚠',
+    detail:'Build context, generate the reply. The single largest delay — carries the transpacific round-trip to OpenRouter.',
+    steps:[
+      ['P3a','User context aggregator','Collects the transcript into one user message, appends to history, fires <code>LLMContextFrame</code> → triggers the LLM.','Pipecat built-in','<1 ms'],
+      ['P3b','LLM pre-warmed on connect','TLS opened + fixed greeting on connect, so turn 1 pays no cold-start tax.','pipeline/main.py',''],
+      ['P3c','OpenRouter (streamed)','Any model via <code>OPENROUTER_MODEL</code> (default Gemini Flash Lite). Largest delay — transpacific hop. Needs <code>OPENROUTER_API_KEY</code>.','pipeline/stages/llm.py','~0.9–1.4 s'],
+      ['P3d','System prompt','Spoken-style (no markdown/emoji); in-character Thai persona under <code>CHARACTER_MODE=1</code>.','pipeline/config.py',''],
+      ['P3e','EmotionTagger','Strips a leading <code>[emotion]</code> before TTS (never spoken) and pushes it to the client to drive face/gesture.','pipeline/stages/emotion_tagger.py','char mode'],
+      ['P3f','Sentence aggregation','First sentence reaches TTS before the full answer exists — the streaming overlap.','Pipecat (aggregator)','overlaps TTS'],
+    ], forks:[] },
+
+  { id:'P4', key:'tts', label:'④ Speak / TTS', cost:'first chunk fast',
+    detail:'Text → voice audio. Default is the local CosyVoice streaming server; cloud TTS are fallback switches.',
+    steps:[
+      ['P4a','CosyVoice2 /tts/stream :8001','Default. Separate repo/process (<code>cosyvoice-local-tts</code>); female zero-shot voice. Now runs its LLM on <b>vLLM in WSL</b> (TTFB ~3.4s→1.1s) reached via <code>COSYVOICE_URL</code> = the WSL IP (not localhost); the Windows <code>tts</code>-env PyTorch server is the fallback.','pipeline/stages/tts.py','local GPU'],
+      ['P4b','COSYVOICE_PACE_RATE=1.3','Caps production at 1.3× real-time so the shared GPU spreads work instead of bursting; first-chunk latency unaffected.','cosyvoice /tts/stream',''],
+      ['P4c','SSL_CERT_FILE=certifi','The tts/musetalk conda envs have a broken Windows cert store; point at certifi or weight downloads fail.','env / STATUS.md',''],
+      ['P4d','Resample → 16 kHz mono','Chunks stream out, resampled client-side for the avatar.','pipeline/stages/tts.py','streaming'],
+    ],
+    forks:[
+      ['P4f1','fallback: ElevenLabs','<code>TTS_PROVIDER=elevenlabs</code> — low-latency multilingual cloud (covers zh-TW).','pipeline/stages/tts.py'],
+      ['P4f2','fallback: Deepgram Aura','<code>TTS_PROVIDER=deepgram</code> — reuses the Deepgram key, English-only; used when ElevenLabs is out of credits.','pipeline/stages/tts.py'],
+    ] },
+
+  { id:'P5', key:'av', label:'⑤ Render / Avatar', cost:'~12 fps · live sync',
+    detail:'Audio → lip-synced video. A separate GPU process; live/audio-master sync so the voice can never freeze.',
+    steps:[
+      ['P5a','Client: resample 16 kHz PCM','<code>musetalk_video.py</code> resamples each chunk and sends it to :8002 immediately.','local_services/musetalk_video.py',''],
+      ['P5b','Client: real-time-paced feed','<code>_feed_q</code> feeds audio at real-time so faster-than-real-time TTS can\'t build a video backlog.','local_services/musetalk_video.py',''],
+      ['P5c','Server: ws wire contract','config / speech_start|end / reset + 16 kHz PCM up; 256² RGB + video_start|clock|end markers down.','local_services/musetalk_server/app.py',''],
+      ['P5d','Server: mouth-region render','MuseTalk lip-syncs a female portrait (<code>AVATAR_REF</code>); no warmup. Reads size/fps from OS env only.','local_services/musetalk_server/app.py','~12 fps'],
+      ['P5e','Server: session guard','SDK is single-client; serializes sessions so a reconnect can\'t re-setup over live worker threads.','local_services/musetalk_server/app.py',''],
+      ['P5f','A/V sync = LIVE (audio-master)','Voice forwarded immediately → <b>never freezes</b>; lips best-effort. Do NOT use locked steady/prerender on the shared GPU (freezes the voice).','STATUS.md · A/V sync','live'],
+    ],
+    forks:[
+      ['P5alt1','fallback: Ditto full-face','<code>AVATAR=ditto</code> — TensorRT FP16 (decoder/stitch/appearance/warp) + GridSample3D plugin → ~25 fps; frame-drop <code>_StridedQueue</code>; warmup masked by a living idle loop; <code>sync_with_audio</code> coupled to <code>video_out_is_live</code>.','local_services/ditto_video.py'],
+      ['P5alt2','fallback: none (audio-only)','<code>AVATAR=none</code> — audio-only over WebRTC; 3D face rendered client-side (~1/50th cost). No conda/CUDA.','pipeline/main.py'],
+    ] },
+
+  { id:'P6', key:'out', label:'⑥ Deliver /<br/>Sync out & loop', cost:'passive',
+    detail:'Measure, stream out, repeat. Records the turn into history and loops; barge-in can start a new turn anytime.',
+    steps:[
+      ['P6a','TtfoMeter','Times <code>UserStopped → BotStarted</code>; logs <code>[TTFO]</code> + median/p95/max. The &lt; 8 s metric.','pipeline/metrics.py','passive'],
+      ['P6b','transport.output() → browser','WebRTC video + audio play in the page; phones work the same over Tailscale HTTPS.','pipeline/main.py','video + audio'],
+      ['P6c','One fps everywhere','Server stride = client clock = <code>video_out_framerate</code> or A/V drift.','pipeline/main.py',''],
+      ['P6d','Assistant aggregator','Appends the bot reply to history so the next turn sees the full conversation. Closes the loop.','Pipecat built-in','<1 ms'],
+    ],
+    forks:[
+      ['P6r','remote viewing','<code>tailscale serve</code> HTTPS (mic needs a secure origin) + <code>_install_client_jitter_buffer</code> (<code>CLIENT_JITTER_BUFFER_MS</code>) + <code>WEBRTC_VIDEO_BITRATE_MAX</code> + smaller frame "fit the stream". Open <code>/client/</code> WITH the trailing slash; never judge sync over RDP.','pipeline/main.py'],
+    ] },
+];
+
+/* lookup for the info panel: id -> {title, body, file, cost} */
+const NODE_INFO = {};
+phases.forEach(p => {
+  NODE_INFO[p.id] = { title: p.label.replace(/<br\/>/g,' '), body: p.detail, file:'', cost: p.cost };
+  p.steps.forEach(s => NODE_INFO[s[0]] = { title:s[1], body:s[2], file:s[3], cost:s[4] });
+  p.forks.forEach(f => NODE_INFO[f[0]] = { title:f[1], body:f[2], file:f[3], cost:'fallback' });
+});
+
+/* expansion state */
+const expanded = new Set();
+
+/* ============================================================
+   build the mermaid flowchart string for the current state
+   ============================================================ */
+function esc(s){ return s.replace(/"/g,'&quot;'); }
+
+function buildMermaid(){
+  let L = ['flowchart LR'];
+  // node + edge declarations per phase
+  const heads = {}, tails = {};
+  phases.forEach(p => {
+    if (expanded.has(p.id)) {
+      // expanded: a subgraph holding the subprocess chain (internal top-down)
+      L.push(`subgraph ${p.id}_sg["${esc(p.label.replace(/<br\/>/g,' '))}"]`);
+      L.push('direction TB');
+      const ids = p.steps.map(s=>s[0]);
+      p.steps.forEach(s => L.push(`${s[0]}["${esc(s[1].replace(/<br\/>/g,' '))}"]`));
+      for (let i=0;i<ids.length-1;i++) L.push(`${ids[i]} --> ${ids[i+1]}`);
+      // fallbacks branch off the phase's main render/output node (last step)
+      p.forks.forEach(f => {
+        L.push(`${f[0]}(["${esc(f[1])}"])`);
+        L.push(`${ids[ids.length-1]} -.-> ${f[0]}`);
+      });
+      L.push('end');
+      heads[p.id] = ids[0];
+      tails[p.id] = ids[ids.length-1];
+    } else {
+      // collapsed: a single bold phase node (clickable)
+      const plus = (p.steps.length + p.forks.length);
+      L.push(`${p.id}["${esc(p.label.replace(/<br\/>/g,' '))}<br/><span class='sub'>+${plus} steps</span>"]`);
+      heads[p.id] = p.id;
+      tails[p.id] = p.id;
+    }
+  });
+  // wire phase to phase
+  for (let i=0;i<phases.length-1;i++){
+    L.push(`${tails[phases[i].id]} ==> ${heads[phases[i+1].id]}`);
+  }
+  // barge-in dashed back edge
+  L.push(`${tails[phases[phases.length-1].id]} -. "barge-in: new turn" .-> ${heads[phases[0].id]}`);
+
+  // styling
+  phases.forEach(p => {
+    const c = COLORS[p.key];
+    if (!expanded.has(p.id)) {
+      L.push(`style ${p.id} fill:${c}22,stroke:${c},stroke-width:2px,color:#e8edf4`);
+    } else {
+      // tint each step node with the phase color
+      p.steps.forEach(s => L.push(`style ${s[0]} fill:${c}18,stroke:${c},color:#e8edf4`));
+      p.forks.forEach(f => L.push(`style ${f[0]} fill:#1a1410,stroke:#647288,color:#9fb0c3`));
+    }
+  });
+
+  // click handlers: phase nodes toggle; everything pushes detail
+  phases.forEach(p => {
+    if (!expanded.has(p.id)) {
+      L.push(`click ${p.id} call onPhase("${p.id}")`);
+    } else {
+      L.push(`click ${p.id}_sg call onPhase("${p.id}")`);
+      p.steps.forEach(s => L.push(`click ${s[0]} call onInfo("${s[0]}")`));
+      p.forks.forEach(f => L.push(`click ${f[0]} call onInfo("${f[0]}")`));
+    }
+  });
+  return L.join('\n');
+}
+
+/* ============================================================
+   error / troubleshooting node-and-arrow graph (static)
+   ============================================================ */
+const errMermaid = `flowchart LR
+  S1["Avatar shows but won't talk"] -.-> F1["TTS out of credits<br/>swap TTS_PROVIDER / key"]
+  S2["Avatar not showing"] -.-> F2["server :8002 down<br/>start it (unless AVATAR=none)"]
+  S3["Lips drift / trail"] -.-> F3["shared-GPU contention (live mode)<br/>bound out_q; NEVER re-lock voice"]
+  S4["Remote stutter, audio fine"] -.-> F4["oversized stream<br/>fit-the-stream: size + bitrate cap"]
+  S5["Laggy on the GPU box"] -.-> F5["onnxruntime on CPU / fps mismatch<br/>CUDA DLLs on path; one fps"]
+  S6["Sync wrong over RDP"] -.-> F6["RDP desyncs A/V<br/>judge natively / capture_mp4"]
+  style S1 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style S2 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style S3 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style S4 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style S5 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style S6 fill:#2a1510,stroke:#f87171,color:#e8edf4
+  style F1 fill:#0e1b14,stroke:#34d399,color:#cfe9d8
+  style F2 fill:#0e1b14,stroke:#34d399,color:#cfe9d8
+  style F3 fill:#0e1b14,stroke:#34d399,color:#cfe9d8
+  style F4 fill:#0e1b14,stroke:#34d399,color:#cfe9d8
+  style F5 fill:#0e1b14,stroke:#34d399,color:#cfe9d8
+  style F6 fill:#0e1b14,stroke:#34d399,color:#cfe9d8`;
+
+/* ============================================================
+   mermaid init + render
+   ============================================================ */
+mermaid.initialize({
+  startOnLoad:false,
+  securityLevel:'loose',
+  theme:'base',
+  flowchart:{ curve:'basis', nodeSpacing:34, rankSpacing:60, htmlLabels:true },
+  themeVariables:{
+    fontFamily:"Inter, system-ui, sans-serif",
+    background:'#0a0e14',
+    primaryColor:'#141b26', primaryTextColor:'#e8edf4', primaryBorderColor:'#26303f',
+    lineColor:'#5b6b82', secondaryColor:'#1a2330', tertiaryColor:'#141b26',
+    clusterBkg:'#10141d', clusterBorder:'#33415588', titleColor:'#9fb0c3',
+    edgeLabelBackground:'#0f141c',
+  }
+});
+
+let _seq = 0;
+async function renderGraph(){
+  const def = buildMermaid();
+  const { svg, bindFunctions } = await mermaid.render('wfgraph_'+(_seq++), def);
+  const host = document.getElementById('graph');
+  host.innerHTML = svg;
+  if (bindFunctions) bindFunctions(host);
+  // mark collapsed phase nodes as clickable-looking
+  phases.forEach(p => { if(!expanded.has(p.id)){ const el = host.querySelector(`[id*="-${p.id}-"]`); if(el) el.classList.add('clickable'); }});
+}
+
+async function renderErrors(){
+  const { svg } = await mermaid.render('errgraph_svg', errMermaid);
+  document.getElementById('errgraph').innerHTML = svg;
+}
+
+/* ============================================================
+   interactions (called from mermaid click directives)
+   ============================================================ */
+window.onPhase = function(id){
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  onInfo(id);
+  renderGraph();
+};
+window.onInfo = function(id){
+  const n = NODE_INFO[id]; if(!n) return;
+  const fileChip = n.file ? `<div class="mt-3"><span class="font-mono text-[11px] text-ink3 bg-[#0b1018] border border-line rounded px-1.5 py-1">${n.file}</span></div>` : '';
+  const cost = n.cost ? `<span class="ml-2 font-mono text-[10.5px] px-2 py-0.5 rounded-full border border-line text-ink2">${n.cost}</span>` : '';
+  document.getElementById('infoBody').innerHTML =
+    `<div class="font-semibold text-ink text-[15px] mb-1">${n.title}${cost}</div>
+     <div class="text-ink2 text-[13.5px] leading-relaxed">${n.body}</div>${fileChip}
+     <div class="mt-3 text-ink3 text-[11.5px] font-mono">tip: click a bold phase node to expand / collapse its subprocess</div>`;
+};
+
+document.getElementById('expandAll').onclick  = ()=>{ phases.forEach(p=>expanded.add(p.id)); renderGraph(); };
+document.getElementById('collapseAll').onclick= ()=>{ expanded.clear(); renderGraph(); };
+document.getElementById('reset').onclick      = ()=>{ expanded.clear(); expanded.add('P5'); renderGraph(); };
+
+/* boot: start with the avatar phase pre-expanded so drill-down is discoverable */
+(async ()=>{
+  expanded.add('P5');
+  await renderGraph();
+  await renderErrors();
+  onInfo('P5');
+})();
+</script>
+</body>
+</html>

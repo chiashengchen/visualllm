@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VisualLLm — Real Turn Timeline (what happened &amp; why)</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#111824; --panel2:#0e1623; --ink:#e8edf4; --mut:#9fb0c3; --dim:#647288;
+    --grid:#1c2533; --line:#22304a;
+    --capture:#60a5fa; --stt:#22d3ee; --llm:#fbbf24; --tts:#f472b6; --avatar:#a78bfa; --deliver:#34d399;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial}
+  a{color:#7cc0ff;text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 60px}
+  h1{font-size:24px;margin:0 0 4px;letter-spacing:.2px}
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:1.3px;color:var(--mut);
+     margin:34px 0 12px;font-weight:600}
+  .sub{color:var(--mut);margin:0 0 18px}
+  .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+
+  /* ---- run banner ---- */
+  .banner{display:flex;flex-wrap:wrap;gap:14px;align-items:stretch;
+    background:linear-gradient(180deg,#101a2a,#0d1421);border:1px solid var(--line);
+    border-radius:14px;padding:16px 18px;margin-bottom:6px}
+  .banner .q{flex:1 1 320px}
+  .banner .q .lbl{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px}
+  .banner .q .qt{font-size:16px;margin-top:3px}
+  .ttfo{display:flex;flex-direction:column;justify-content:center;align-items:center;
+    min-width:150px;background:#0c1f17;border:1px solid #1f5740;border-radius:12px;padding:10px 18px}
+  .ttfo b{font-size:34px;color:var(--ok);line-height:1}
+  .ttfo small{color:var(--mut)}
+  .pill{display:inline-block;font-size:11px;padding:2px 9px;border-radius:999px;
+    background:#0c1f17;color:var(--ok);border:1px solid #1f5740;margin-left:6px;vertical-align:middle}
+
+  /* ---- legend ---- */
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0 6px}
+  .lg{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--mut);
+    background:var(--panel);border:1px solid var(--line);padding:4px 11px;border-radius:999px;
+    cursor:pointer;user-select:none}
+  .lg .dot{width:10px;height:10px;border-radius:3px}
+  .lg.off{opacity:.32}
+
+  /* ---- swimlane chart ---- */
+  .chart{background:var(--panel2);border:1px solid var(--line);border-radius:14px;
+    padding:14px 8px 8px 0;overflow-x:auto}
+  .chart-inner{position:relative}
+  .axis{position:relative;height:22px;margin-left:var(--lblw)}
+  .tick{position:absolute;top:0;color:var(--dim);font-size:11px;transform:translateX(-50%)}
+  .lane{position:relative;height:var(--laneh);border-top:1px solid var(--grid)}
+  .lane .lname{position:absolute;left:0;top:0;width:var(--lblw);height:100%;
+    display:flex;align-items:center;gap:8px;padding-left:12px;font-size:12.5px;color:var(--ink);
+    border-right:1px solid var(--grid);background:var(--panel2);z-index:3}
+  .lane .lname .dot{width:9px;height:9px;border-radius:3px;flex:none}
+  .track{position:absolute;left:var(--lblw);right:0;top:0;height:100%}
+  .gl{position:absolute;top:0;bottom:0;width:1px;background:var(--grid)}
+  .ttfo-band{position:absolute;top:0;bottom:0;background:rgba(52,211,153,.07);
+    border-left:1px dashed rgba(52,211,153,.5);border-right:1px dashed rgba(52,211,153,.5);z-index:0}
+  .ttfo-band .cap{position:absolute;top:-20px;left:50%;transform:translateX(-50%);
+    color:var(--ok);font-size:11px;white-space:nowrap}
+
+  /* bars + markers sit in the lane track */
+  .bar{position:absolute;height:18px;top:50%;transform:translateY(-50%);border-radius:5px;
+    opacity:.9;cursor:pointer;border:1px solid rgba(255,255,255,.12)}
+  .mk{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;
+    transform:translate(-50%,-50%);cursor:pointer;border:2px solid #0b0f17;z-index:2}
+  .mk.big{width:18px;height:18px;box-shadow:0 0 0 4px rgba(52,211,153,.25)}
+  .mk.recv{background:var(--bg)!important}            /* hollow ring = node RECEIVES input */
+  .mk.recv::after{content:"";position:absolute;inset:3px;border-radius:50%;background:inherit;opacity:0}
+  .bar:hover,.mk:hover{filter:brightness(1.25)}
+  .hl{outline:2px solid #fff;outline-offset:1px;filter:brightness(1.3)}
+
+  /* tooltip */
+  #tip{position:fixed;z-index:20;max-width:320px;background:#0a1018;border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;pointer-events:none;opacity:0;transition:opacity .08s;
+    box-shadow:0 10px 30px rgba(0,0,0,.5)}
+  #tip .tt{font-weight:600;margin-bottom:3px}
+  #tip .tm{color:var(--dim);font-size:11px;margin-bottom:5px}
+  #tip .tw{color:var(--mut);font-size:12.5px}
+
+  /* ---- handoffs ---- */
+  .handoffs{display:grid;gap:10px}
+  .ho{display:grid;grid-template-columns:118px 26px 118px 70px 1fr;gap:12px;align-items:center;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 14px}
+  .ho.star{border-color:#4a3a17;background:linear-gradient(180deg,#16110a,#0f0c07)}
+  .ho .chip{display:inline-flex;align-items:center;gap:7px;justify-content:center;font-size:12.5px;
+    padding:5px 8px;border-radius:8px;border:1px solid currentColor;white-space:nowrap}
+  .ho .chip .dot{width:9px;height:9px;border-radius:3px;flex:none}
+  .ho .arr{color:var(--dim);text-align:center;font-size:18px}
+  .ho .at{font-family:ui-monospace,Consolas,monospace;color:var(--ink);font-size:13px;text-align:right}
+  .ho .nt{color:var(--mut);font-size:12.5px}
+  .ho .star-b{color:var(--llm);font-weight:600}
+
+  /* ---- event list ---- */
+  .events{border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .ev{display:grid;grid-template-columns:86px 10px 1fr;gap:12px;padding:11px 16px;
+    border-top:1px solid var(--grid);cursor:pointer}
+  .ev:first-child{border-top:none}
+  .ev:hover,.ev.hl{background:#0f1825}
+  .ev .t{font-family:ui-monospace,Consolas,monospace;color:var(--ink);text-align:right;font-size:13px}
+  .ev .t small{color:var(--dim)}
+  .ev .rail{position:relative}
+  .ev .rail::before{content:"";position:absolute;left:3px;top:5px;width:4px;height:4px;border-radius:50%;background:currentColor}
+  .ev .what{font-weight:600}
+  .ev .what .stag{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;
+    padding:1px 7px;border-radius:999px;margin-left:8px;vertical-align:middle;border:1px solid currentColor}
+  .ev .why{color:var(--mut);font-size:13px;margin-top:2px}
+  .ev .src{color:var(--dim);font-size:11px;margin-top:3px}
+
+  /* ---- metrics ---- */
+  .grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.8px}
+  .card .v{font-size:22px;margin:4px 0 2px}
+  .card .n{color:var(--mut);font-size:12px}
+  .card .v .u{font-size:13px;color:var(--mut)}
+  .tag-ok{color:var(--ok)} .tag-warn{color:var(--warn)} .tag-bad{color:var(--bad)}
+
+  /* ---- why callout ---- */
+  .callout{background:linear-gradient(180deg,#15110a,#0f0c07);border:1px solid #4a3a17;
+    border-radius:14px;padding:18px 20px}
+  .callout h3{margin:0 0 8px;color:var(--llm);font-size:16px}
+  .eqn{font-family:ui-monospace,Consolas,monospace;font-size:14px;background:#0c0f15;
+    border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:10px 0;color:var(--ink)}
+  .callout p{color:var(--mut);margin:8px 0 0}
+  .callout b.g{color:var(--ok)} .callout b.p{color:var(--tts)} .callout b.a{color:var(--llm)}
+
+  footer{margin-top:34px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--grid);padding-top:14px}
+  footer code{background:#0c0f15;border:1px solid var(--line);border-radius:6px;padding:2px 7px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>VisualLLm — one real turn, on a clock</h1>
+  <p class="sub">A measured timeline of <b>what happens and why</b> from the moment the user stops
+  talking to the moment the avatar finishes. Every number below is from a real capture — not a
+  diagram. (Topology view: <a href="./workflow-diagram.md">workflow-diagram.md</a>.)</p>
+
+  <div class="banner">
+    <div class="q">
+      <div class="lbl" id="m-when">Captured turn · 2026-06-22 12:14 · this box (RTX 5060 Ti, Blackwell)</div>
+      <div class="qt" id="m-q">“What is artificial intelligence? Please explain briefly.”</div>
+      <div class="lbl" id="m-stack" style="margin-top:8px">Stack: Deepgram STT · OpenRouter LLM · CosyVoice2 (vLLM/WSL) TTS · MuseTalk avatar · 12&nbsp;fps</div>
+    </div>
+    <div class="ttfo">
+      <small>Time&#8209;to&#8209;first&#8209;output</small>
+      <b id="m-ttfo">3.19s</b>
+      <small>target &lt; 8s <span class="pill" id="m-pass">PASS</span></small>
+    </div>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <h2>The turn, as a clock</h2>
+  <div class="chart">
+    <div class="chart-inner" id="chart"></div>
+  </div>
+  <p class="sub" style="margin-top:10px">t = 0 is the instant the user <b>stops</b> speaking (the
+  &lt;8s stopwatch starts here). The shaded band is the TTFO window. Hover any bar or dot for the
+  why. Notice the <span style="color:var(--llm)">LLM</span>,
+  <span style="color:var(--tts)">TTS</span> and <span style="color:var(--avatar)">avatar</span>
+  lanes <i>overlap</i> — that is the whole trick. Hollow rings (◯) mark where a node
+  <b>receives</b> input; filled dots (●) where a node <b>emits</b> output.</p>
+
+  <h2>Node-to-node handoffs — when each node gets its input</h2>
+  <div class="handoffs" id="handoffs"></div>
+  <p class="sub" style="margin-top:10px">All four arrivals are on the pipeline's single clock
+  (relative to t0). <b>Important:</b> the +3.19s "out" is when the <b>voice</b> starts — the avatar
+  forwards audio immediately (~7ms after the chunk) <b>without waiting for a rendered frame</b>. The
+  lip-synced video is produced <b>best-effort and decoupled</b>: MuseTalk sustains real-time
+  throughput (probe: 12.0&nbsp;fps, ~83ms/frame, no freeze), but the intra-server render latency
+  isn't logged, the lips can trail the voice under shared-GPU load, and the exact lip-vs-voice offset
+  wasn't captured this run (the recorded mp4 had no video track). So: real-time <i>throughput</i>,
+  not zero-latency lip-sync.</p>
+
+  <h2>Why TTFO is small (it’s overlap, not a sum)</h2>
+  <div class="callout">
+    <h3>The pipeline streams — the user hears sentence 1 while everything else is still cooking.</h3>
+    <div class="eqn">
+      TTFO 3.19s  ≈  LLM first sentence (0.93s)  +  CosyVoice first&#8209;chunk TTFB (2.25s)
+    </div>
+    <p>The <b class="a">LLM</b> finishes the <i>entire</i> 46-token answer at <b>+1.07s</b>, and
+    <b class="p">TTS</b> sentences 2&amp;3 and the rest of the <span style="color:var(--avatar)">avatar</span>
+    render all happen <i>after</i> the first words are already playing. None of that adds to TTFO.
+    If the stages ran serially you’d wait for the whole answer to be generated, then fully
+    synthesized, then rendered. Instead the critical path is just <b>first-sentence&nbsp;→&nbsp;first-audio</b>,
+    and the user is hearing a reply at <b class="g">3.19s</b>.</p>
+    <p>On this run, <b class="p">TTS first-chunk (2.25s)</b> — not the LLM — was the dominant cost.
+    That’s the lever to watch (warm CosyVoice / vLLM first-inference). The transpacific LLM hop was
+    a modest 0.89s.</p>
+  </div>
+
+  <h2>Every event, and why it happens</h2>
+  <div class="events" id="events"></div>
+
+  <h2>How it felt on the wire (probe, receiver-side)</h2>
+  <div class="grid3" id="metrics"></div>
+  <p class="sub" style="margin-top:10px">These come from the headless WebRTC probe that received the
+  bot’s stream (the pipeline’s own clock drives the timeline above; these are measured at the
+  <i>viewer</i>). 423 video frames / 1819 audio packets over a 40s capture.</p>
+
+  <footer>
+    <div>Reproduce — <b>one command</b>: <code>python -m scripts.measure --offline-capture</code>
+    &nbsp;drives a real turn, parses the <code>pipeline.log</code> delta, runs the offline avatar
+    capture, and rewrites <code>docs/measure_data.js</code> — this page auto-uses it on reload
+    (hard-refresh). All numbers above come from that one run.</div>
+    <div style="margin-top:6px">Sources of truth: <a href="../STATUS.md">STATUS.md</a> ·
+    <a href="../WORKFLOW.md">WORKFLOW.md</a> · <a href="./workflow-diagram.md">workflow-diagram.md</a>
+    (topology). Avatar A/V sync = <b>live / audio-master</b> (voice never freezes; lips best-effort).</div>
+    <div style="margin-top:6px;color:#4a5668">Note: the lip-offset metric is a mouth-motion×audio
+    cross-correlation; it's flagged <b>LOW-CONF</b> when the correlation is weak (the 256px mouth
+    signal is noisy) — trust it only at corr ≥ 0.3. The voice-path timings don't depend on it.</div>
+  </footer>
+</div>
+
+<div id="tip"><div class="tt"></div><div class="tm"></div><div class="tw"></div></div>
+
+<!-- Optional: written by `python -m scripts.measure`. If present, its window.MEASURE
+     (a fresh real capture) overrides the embedded defaults below. Absent = use defaults. -->
+<script src="./measure_data.js" onerror="void 0"></script>
+<script>
+const STAGES = {
+  capture:{name:"① Capture / VAD", c:getCssVar('--capture')},
+  stt:    {name:"② STT (Deepgram)", c:getCssVar('--stt')},
+  llm:    {name:"③ LLM (OpenRouter)", c:getCssVar('--llm')},
+  tts:    {name:"④ TTS (CosyVoice)", c:getCssVar('--tts')},
+  avatar: {name:"⑤ Avatar (MuseTalk)", c:getCssVar('--avatar')},
+  deliver:{name:"⑥ Deliver / loop", c:getCssVar('--deliver')},
+};
+function getCssVar(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim();}
+
+// Every event is REAL (offset in s from t0 = user-stopped-speaking @ 12:14:33.900).
+// bar = has end; mk = point. why = the reason it happens. src = log/probe line.
+// kind: "span" (a bar with end), "emit" (● node produced output), "recv" (◯ node got input),
+// "turn" (turn boundary). `from` names the node that fed a recv event.
+const EV_DEFAULT = [
+  {stage:"capture", t:-2.18, end:0, kind:"span", label:"User speaking",
+   why:"Browser mic → WebRTC → Silero VAD listens for the end of the utterance. (The probe played q_ai.wav as the mic.)",
+   src:"log 12:14:31.721 user-turn-started"},
+  {stage:"stt", t:-2.18, end:0, kind:"span", label:"Deepgram nova-2 streaming (receives mic)",
+   why:"STT's input is the live mic: audio streams to Deepgram over a websocket the whole time the user talks; interim partials refine into one final transcript.",
+   src:"log 12:14:31.7 → 33.9"},
+  {stage:"capture", t:0, kind:"turn", label:"User STOPPED speaking — t0",
+   why:"Silero VAD + the turn-analyzer agree the turn ended. THIS instant starts the <8s TTFO stopwatch.",
+   src:"log 12:14:33.900 user-turn-stopped"},
+  {stage:"stt", t:0, kind:"emit", label:"STT emits final transcript",
+   why:"\"What is artificial intelligence? Please explain briefly.\" — pushed into the LLM context aggregator.",
+   src:"log 12:14:33.900"},
+  {stage:"llm", t:0, kind:"recv", from:"STT", label:"◯ LLM receives the transcript",
+   why:"The context aggregator hands the final transcript to OpenRouter and generation starts at t0. The LLM was pre-warmed on connect, so there is no cold start — only the network round-trip.",
+   src:"log 12:14:33.900 'Generating chat from context'"},
+  {stage:"llm", t:0.0, end:1.07, kind:"span", label:"OpenRouter generating", subtle:true,
+   why:"Streams tokens for ~1.07s total. The whole answer is ready long before TTS finishes sentence 1.",
+   src:"log 12:14:33.900 → 34.968"},
+  {stage:"llm", t:0.89, kind:"emit", label:"LLM emits first token",
+   why:"OpenRouter TTFB 0.889s — the transpacific cloud hop is the LLM's main cost, and it's modest here.",
+   src:"log 12:14:34.789 TTFB 0.889s"},
+  {stage:"tts", t:0.93, kind:"recv", from:"LLM", label:"◯ TTS receives sentence 1",
+   why:"\"Artificial intelligence, or AI, is about making computers smart.\" Sentence aggregation flushes the FIRST complete sentence (40ms after the first token) so TTS can start before the full answer exists.",
+   src:"log 12:14:34.832 run_tts"},
+  {stage:"llm", t:1.07, kind:"emit", label:"LLM full answer done (46 tokens)",
+   why:"The LLM finishes the entire reply while TTS is still on sentence 1. Everything after this overlaps playback — it does not add to TTFO.",
+   src:"log 12:14:34.968 processing 1.068s"},
+  {stage:"tts", t:0.93, end:3.64, kind:"span", label:"CosyVoice synthesizing sentence 1",
+   why:"CosyVoice2-0.5B running its LLM on vLLM (WSL Blackwell GPU). First audio at TTFB 2.247s; whole sentence done at +3.64s. This first chunk is the single biggest piece of TTFO.",
+   src:"log 12:14:34.832 → 37.544 (TTFB 2.247s)"},
+  {stage:"tts", t:3.18, kind:"emit", label:"TTS emits sentence-1 first chunk",
+   why:"CosyVoice TTFB 2.247s after receiving the sentence. The chunk is resampled to 16kHz mono and handed straight to the avatar — this is what starts the bot speaking.",
+   src:"log 12:14:37.080 TTFB 2.247s"},
+  {stage:"avatar", t:0, end:3.19, kind:"span", label:"Idle / neutral frames", subtle:true,
+   why:"The MuseTalk server emits a calm neutral face between turns (12fps) so the picture is never frozen while TTS works.",
+   src:"probe: video flowing pre-speech"},
+  {stage:"avatar", t:3.18, kind:"recv", from:"CosyVoice", label:"◯ MuseTalk receives the voice",
+   why:"The avatar client forwards the first PCM chunk to the :8002 render server the instant TTS emits it (real-time-paced over the websocket). This is the CosyVoice → MuseTalk handoff you asked about.",
+   src:"≈ TTS emit 12:14:37.080 (bot speaks 7ms later)"},
+  {stage:"deliver", t:3.19, kind:"turn", big:true, label:"Bot started speaking → TTFO 3.19s",
+   why:"The VOICE starts reaching the client here — ~7ms after the first audio chunk, because the avatar forwards audio immediately WITHOUT waiting for a rendered frame. TTFO measures this audio start: 3.19s vs the 8s target — PASS. Lip-synced video is rendered best-effort (decoupled) and can trail slightly — see the handoff note.",
+   src:"log 12:14:37.087 · [TTFO OK] 3.19s (audio-path event)"},
+  {stage:"avatar", t:3.19, end:22.28, kind:"span", label:"MuseTalk lip-sync render",
+   why:"Mouth-region frames at 12fps, live/audio-master sync: the voice is forwarded immediately so it can never freeze; lips track best-effort on the shared GPU.",
+   src:"log 12:14:37 → 56.18"},
+  {stage:"tts", t:3.64, kind:"recv", from:"LLM", label:"◯ TTS receives sentence 2",
+   why:"\"It's when machines can do things that normally require human intelligence, like learning or problem-solving.\" Starts the instant sentence 1 finished — CosyVoice synthesizes one sentence at a time (serial).",
+   src:"log 12:14:37.544 run_tts"},
+  {stage:"tts", t:3.64, end:8.51, kind:"span", label:"CosyVoice synthesizing sentence 2",
+   why:"First audio at TTFB 3.229s (longer because it waited behind sentence 1), done at +8.51s. It's synthesized while sentence 1 is already playing to the user, so it doesn't affect TTFO.",
+   src:"log 12:14:37.544 → 42.405 (TTFB 3.229s)"},
+  {stage:"tts", t:6.87, kind:"emit", label:"TTS emits sentence-2 first chunk",
+   why:"CosyVoice TTFB 3.229s after receiving sentence 2.",
+   src:"log 12:14:40.773 TTFB 3.229s"},
+  {stage:"tts", t:8.51, kind:"recv", from:"LLM", label:"◯ TTS receives sentence 3",
+   why:"\"Is there anything specific about AI you'd like to know?\" Again starts right as sentence 2 finished — the reply is delivered as a continuous serial stream of sentences.",
+   src:"log 12:14:42.406 run_tts"},
+  {stage:"tts", t:8.51, end:10.99, kind:"span", label:"CosyVoice synthesizing sentence 3",
+   why:"First audio at TTFB 2.476s, done at +10.99s. All synthesis is finished by +11s, but the voice keeps playing to the avatar (real-time-paced) until +22.28s.",
+   src:"log 12:14:42.406 → 44.888 (TTFB 2.476s)"},
+  {stage:"tts", t:10.98, kind:"emit", label:"TTS emits sentence-3 first chunk",
+   why:"CosyVoice TTFB 2.476s after receiving sentence 3 — the last synthesis of the turn.",
+   src:"log 12:14:44.883 TTFB 2.476s"},
+  {stage:"deliver", t:22.28, kind:"turn", label:"Bot stopped speaking — turn complete",
+   why:"Full multi-sentence answer delivered. Mic un-mutes (half-duplex echo-guard), and the assistant aggregator records the turn so the next turn sees full history.",
+   src:"log 12:14:56.182"},
+];
+
+// The data handoffs between nodes — "node X receives input from node Y at time t".
+const HANDOFFS_DEFAULT = [
+  {from:"stt", to:"llm", t:0.00, what:"final transcript (text)",
+   note:"The question text enters the LLM at t0; generation starts immediately (pre-warmed)."},
+  {from:"llm", to:"tts", t:0.93, what:"sentence 1 (text)",
+   note:"First complete sentence flushed 40ms after the first token, so speech can begin before the full answer exists."},
+  {from:"tts", to:"avatar", t:3.18, what:"first voice chunk (16kHz PCM)",
+   note:"CosyVoice → MuseTalk: the avatar forwards the chunk to the :8002 render server the instant TTS emits it.", star:true},
+  {from:"avatar", to:"deliver", t:3.19, what:"voice starts (audio forwarded)",
+   note:"MuseTalk → browser: the VOICE starts ~7ms after it arrived — audio is forwarded immediately, NOT gated on a rendered frame. This 3.19s audio start is TTFO. Lip frames are rendered best-effort at 12fps (decoupled) and can lag the voice under GPU load."},
+];
+
+const METRICS_DEFAULT = [
+  {k:"TTFO", v:"3.19", u:"s", n:"target 8s", tag:"ok"},
+  {k:"Startup (connect → 1st frame)", v:"4.72", u:"s", n:"incl. idle warmup", tag:""},
+  {k:"Received video", v:"12.0", u:"fps", n:"= MUSETALK_FPS", tag:"ok"},
+  {k:"Frame interval", v:"83.5", u:"ms mean", n:"p95 109 · max 187 (target 83)", tag:""},
+  {k:"Freeze (max gap)", v:"187", u:"ms", n:"OK — under 500ms", tag:"ok"},
+  {k:"Audio arrival gap", v:"58", u:"ms max", n:"p95 42ms — marginal", tag:"warn"},
+  {k:"Lip offset", v:"n/a", u:"", n:"mp4 had no video track this run", tag:""},
+  {k:"Frames / audio pkts", v:"423", u:"/ 1819", n:"over a 40s capture", tag:""},
+];
+
+// ---------- data source: fresh capture (window.MEASURE) overrides defaults ----------
+const _M = (typeof window !== "undefined" && window.MEASURE) ? window.MEASURE : null;
+const EV       = (_M && _M.events)   || EV_DEFAULT;
+const HANDOFFS = (_M && _M.handoffs) || HANDOFFS_DEFAULT;
+const METRICS  = (_M && _M.metrics)  || METRICS_DEFAULT;
+
+function applyMeta(){
+  if(!_M || !_M.meta) return;
+  const m=_M.meta, set=(id,v)=>{const e=document.getElementById(id); if(e&&v!=null) e.textContent=v;};
+  set("m-when", `Captured turn · ${m.when} · ${m.machine||""}`);
+  if(m.question) set("m-q", `“${m.question}”`);
+  if(m.stack) set("m-stack", `Stack: ${m.stack}`);
+  set("m-ttfo", `${m.ttfo}s`);
+  set("m-pass", m.ttfo_pass ? "PASS" : "FAIL");
+}
+
+// ---------- timeline geometry ----------
+const _ts = EV.flatMap(e=>[e.t, (e.end!=null?e.end:e.t)]);
+const T0 = Math.min(-2.5, Math.floor(Math.min(..._ts)));
+const T1 = Math.max(12, Math.ceil(Math.max(..._ts)) + 1);
+const TTFO = (_M && _M.meta && _M.meta.ttfo!=null) ? _M.meta.ttfo : 3.19;
+const PXPS = 47, LBLW = 168, LANEH = 46;
+const order = ["capture","stt","llm","tts","avatar","deliver"];
+const X = t => (t - T0) * PXPS;
+const W = (T1 - T0) * PXPS;
+
+const root = document.documentElement;
+root.style.setProperty('--lblw', LBLW+'px');
+root.style.setProperty('--laneh', LANEH+'px');
+
+function buildLegend(){
+  const el = document.getElementById('legend');
+  order.forEach(s=>{
+    const d=document.createElement('div'); d.className='lg'; d.dataset.s=s;
+    d.innerHTML=`<span class="dot" style="background:${STAGES[s].c}"></span>${STAGES[s].name}`;
+    d.onclick=()=>{d.classList.toggle('off');applyFilter();};
+    el.appendChild(d);
+  });
+}
+function applyFilter(){
+  const off=new Set([...document.querySelectorAll('.lg.off')].map(x=>x.dataset.s));
+  document.querySelectorAll('[data-stage]').forEach(n=>{
+    n.style.display = off.has(n.dataset.stage) ? 'none':'';
+  });
+}
+
+function buildChart(){
+  const c=document.getElementById('chart');
+  c.style.width=(LBLW+W)+'px';
+
+  // axis ticks every 1s, labelled every 2s
+  const axis=document.createElement('div'); axis.className='axis'; axis.style.width=W+'px';
+  for(let t=Math.ceil(T0);t<=T1;t++){
+    if(t%2!==0 && t!==0) continue;
+    const tk=document.createElement('div'); tk.className='tick'; tk.style.left=X(t)+'px';
+    tk.textContent=(t===0?'0':t)+'s'; axis.appendChild(tk);
+  }
+  c.appendChild(axis);
+
+  order.forEach(s=>{
+    const lane=document.createElement('div'); lane.className='lane';
+    const name=document.createElement('div'); name.className='lname';
+    name.innerHTML=`<span class="dot" style="background:${STAGES[s].c}"></span>${STAGES[s].name}`;
+    lane.appendChild(name);
+    const track=document.createElement('div'); track.className='track';
+
+    // gridlines + ttfo band (draw once, on first lane via ::before pattern — simpler: each lane)
+    for(let t=Math.ceil(T0);t<=T1;t++){
+      const gl=document.createElement('div'); gl.className='gl'; gl.style.left=X(t)+'px'; track.appendChild(gl);
+    }
+    const band=document.createElement('div'); band.className='ttfo-band';
+    band.style.left=X(0)+'px'; band.style.width=(X(TTFO)-X(0))+'px';
+    if(s===order[0]) band.innerHTML=`<span class="cap">◀ TTFO window ${TTFO}s ▶</span>`;
+    track.appendChild(band);
+
+    EV.filter(e=>e.stage===s).forEach((e,i)=>{
+      const node=document.createElement('div');
+      node.dataset.stage=s; node.dataset.id=EV.indexOf(e);
+      if(e.end!=null){
+        node.className='bar';
+        node.style.left=X(e.t)+'px'; node.style.width=Math.max(6,X(e.end)-X(e.t))+'px';
+        node.style.background=STAGES[s].c;
+        if(e.subtle){node.style.opacity=.32;}
+      }else{
+        const recv = e.kind==='recv';
+        node.className='mk'+(e.big?' big':'')+(recv?' recv':'');
+        node.style.left=X(e.t)+'px';
+        if(recv){ node.style.borderColor=STAGES[s].c; }
+        else { node.style.background=STAGES[s].c; }
+      }
+      wireHover(node,e);
+      track.appendChild(node);
+    });
+    lane.appendChild(track);
+    c.appendChild(lane);
+  });
+}
+
+function buildEvents(){
+  const el=document.getElementById('events');
+  [...EV].sort((a,b)=>a.t-b.t).forEach(e=>{
+    const id=EV.indexOf(e);
+    const row=document.createElement('div'); row.className='ev'; row.dataset.stage=e.stage; row.dataset.id=id;
+    const tt=(e.t>=0?'+':'')+e.t.toFixed(2);
+    const rng=e.end!=null?`<small> → ${(e.end>=0?'+':'')+e.end.toFixed(2)}</small>`:'';
+    row.innerHTML=
+      `<div class="t">${tt}s${rng}</div>`+
+      `<div class="rail" style="color:${STAGES[e.stage].c}"></div>`+
+      `<div><div class="what">${e.label}<span class="stag" style="color:${STAGES[e.stage].c}">${e.stage}</span></div>`+
+      `<div class="why">${e.why}</div><div class="src mono">${e.src}</div></div>`;
+    wireHover(row,e);
+    el.appendChild(row);
+  });
+}
+
+function buildMetrics(){
+  const el=document.getElementById('metrics');
+  METRICS.forEach(m=>{
+    const card=document.createElement('div'); card.className='card';
+    const tag=m.tag?` tag-${m.tag}`:'';
+    card.innerHTML=`<div class="k">${m.k}</div>`+
+      `<div class="v${tag}">${m.v} <span class="u">${m.u}</span></div>`+
+      `<div class="n">${m.n}</div>`;
+    el.appendChild(card);
+  });
+}
+
+function buildHandoffs(){
+  const el=document.getElementById('handoffs');
+  const chip=s=>`<span class="chip" style="color:${STAGES[s].c}"><span class="dot" style="background:${STAGES[s].c}"></span>${STAGES[s].name.replace(/^[①②③④⑤⑥]\s/,'')}</span>`;
+  HANDOFFS.forEach(h=>{
+    const row=document.createElement('div'); row.className='ho'+(h.star?' star':'');
+    row.innerHTML=
+      chip(h.from)+
+      `<div class="arr">→</div>`+
+      chip(h.to)+
+      `<div class="at">+${h.t.toFixed(2)}s</div>`+
+      `<div class="nt">${h.star?'<span class="star-b">⭐ </span>':''}<b>${h.what}</b> — ${h.note}</div>`;
+    el.appendChild(row);
+  });
+}
+
+// ---------- hover: tooltip + cross-highlight ----------
+const tip=document.getElementById('tip');
+function wireHover(node,e){
+  const id=EV.indexOf(e);
+  node.addEventListener('mousemove',ev=>{
+    tip.querySelector('.tt').textContent=e.label;
+    const tt=(e.t>=0?'+':'')+e.t.toFixed(2)+'s'+(e.end!=null?` → ${(e.end>=0?'+':'')+e.end.toFixed(2)}s`:'');
+    tip.querySelector('.tm').textContent=tt+'  ·  '+e.stage;
+    tip.querySelector('.tw').textContent=e.why;
+    tip.style.opacity=1;
+    const pad=14; let x=ev.clientX+pad, y=ev.clientY+pad;
+    if(x+330>innerWidth)x=ev.clientX-330; if(y+140>innerHeight)y=ev.clientY-140;
+    tip.style.left=x+'px'; tip.style.top=y+'px';
+  });
+  node.addEventListener('mouseenter',()=>setHL(id,true));
+  node.addEventListener('mouseleave',()=>{tip.style.opacity=0;setHL(id,false);});
+}
+function setHL(id,on){
+  document.querySelectorAll(`[data-id="${id}"]`).forEach(n=>n.classList.toggle('hl',on));
+}
+
+applyMeta(); buildLegend(); buildChart(); buildHandoffs(); buildEvents(); buildMetrics();
+</script>
+</body>
+</html>

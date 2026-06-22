@@ -138,6 +138,10 @@ async def run_bot(transport: BaseTransport) -> None:
     ]
     pipeline = Pipeline(stages)
 
+    _install_delivered_audio_capture(transport)
+    _install_handle_audio_probe()
+    _relax_bot_vad_stop_timeout()   # steady-mode screech fix (see the function's docstring)
+
     if debug_on and avatar is not None:
         # Server already running (started in __main__); just hand the dashboard a
         # reference to this session's avatar client so it can read live sync state.
@@ -246,6 +250,163 @@ async def bot(runner_args: RunnerArguments) -> None:
     }
     transport = await create_transport(runner_args, transport_params)
     await run_bot(transport)
+
+
+def _install_delivered_audio_capture(transport) -> None:
+    """DEBUG (COSYVOICE_DELIVERED_CAPTURE=1): capture the audio the OUTPUT TRANSPORT actually
+    sends to WebRTC -- boundary 3, the closest point to what the user hears. CosyVoice source +
+    musetalk downstream are confirmed clean, so if the screech appears HERE it's the non-live
+    transport path; if HERE is clean too it's WebRTC/browser. Saves a session wav + WARNs on any
+    garbled NON-silent window (normal-volume garble that amplitude alone misses -> spectral flatness)."""
+    import os
+    if os.getenv("COSYVOICE_DELIVERED_CAPTURE", "0").lower() not in ("1", "true", "yes", "on"):
+        return
+    try:
+        out = transport.output()
+    except Exception:  # noqa: BLE001
+        return
+    if out is None or getattr(out, "_delivered_wrapped", False):
+        return
+    import time
+    import wave
+    from pathlib import Path
+    import numpy as np
+
+    d = Path(__file__).resolve().parent.parent / "output" / "cosy_noise"
+    d.mkdir(parents=True, exist_ok=True)
+    wavpath = d / f"_delivered_{time.strftime('%H%M%S')}.wav"
+    st = {"wf": None, "sr": None, "buf": np.zeros(0, np.float32), "t": 0.0}
+    orig = out.write_audio_frame
+    st["fmts"] = {}     # (type, sample_rate, num_channels, nbytes) -> count, across all frames
+    st["dumped"] = 0    # how many per-frame garble metadata lines we've logged
+
+    async def wrapped(frame):
+        try:
+            sr = getattr(frame, "sample_rate", 24000) or 24000
+            if st["wf"] is None:
+                wf = wave.open(str(wavpath), "wb")
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+                st["wf"] = wf; st["sr"] = sr
+                logger.info(f"Delivered-audio capture ON -> {wavpath.name} (transport output, sr={sr}).")
+            st["wf"].writeframes(frame.audio)
+            # Per-frame FORMAT census: if garbled frames have a different rate/len/channels than
+            # clean ones, it's a format/rate bug (fixable); if identical, the BYTES are garbage
+            # (deeper queue corruption). type tells us if a non-audio frame slipped to write.
+            key = (type(frame).__name__, sr, getattr(frame, "num_channels", 1), len(frame.audio))
+            st["fmts"][key] = st["fmts"].get(key, 0) + 1
+            fa = np.frombuffer(frame.audio, np.int16).astype(np.float32) / 32768.0
+            # Per-FRAME garble check (frame is ~10ms; use rms + fraction near full-scale as the tell)
+            if fa.size:
+                frms = float(np.sqrt(np.mean(fa ** 2)))
+                ffull = float(np.mean(np.abs(fa) > 0.9))
+                if frms > 0.35 and ffull > 0.02 and st["dumped"] < 25:
+                    st["dumped"] += 1
+                    logger.warning(f"[garble frame] type={type(frame).__name__} sr={sr} "
+                                   f"ch={getattr(frame,'num_channels',1)} nbytes={len(frame.audio)} "
+                                   f"rms={frms:.3f} frac_fullscale={ffull:.3f} "
+                                   f"min={fa.min():.2f} max={fa.max():.2f}")
+            st["buf"] = np.concatenate([st["buf"], fa])
+            win = int(0.5 * sr)
+            while st["buf"].size >= win:
+                seg = st["buf"][:win]; st["buf"] = st["buf"][win:]
+                rms = float(np.sqrt(np.mean(seg ** 2)))
+                if rms > 0.02:  # skip silence (silence reads as flat=1.0)
+                    spec = np.abs(np.fft.rfft(seg)) ** 2 + 1e-10
+                    flat = float(np.exp(np.mean(np.log(spec))) / np.mean(spec))
+                    if flat > 0.15:
+                        logger.warning(f"[delivered noise] t={st['t']:.1f}s rms={rms:.3f} "
+                                       f"flat={flat:.3f} | formats seen: {st['fmts']}")
+                st["t"] += 0.5
+        except Exception:  # noqa: BLE001 -- capture must never break audio output
+            pass
+        return await orig(frame)
+
+    out.write_audio_frame = wrapped
+    out._delivered_wrapped = True
+
+
+def _install_handle_audio_probe() -> None:
+    """DEBUG (COSYVOICE_HANDLE_AUDIO_PROBE=1): instrument pipecat's MediaSender.handle_audio_frame
+    IN boundary. write_audio_frame (boundary 3) is garbled but musetalk push (2.5) is clean and
+    every component reads clean -- so check at runtime: is the audio ALREADY garbled when it ENTERS
+    handle_audio_frame (-> corruption is upstream/in-transit) or clean there (-> inside the transport
+    buffer/chunk/queue)? Also logs the true self._sample_rate (confirms resampler passthrough)."""
+    import os
+    if os.getenv("COSYVOICE_HANDLE_AUDIO_PROBE", "0").lower() not in ("1", "true", "yes", "on"):
+        return
+    try:
+        from pipecat.transports.base_output import BaseOutputTransport
+    except Exception:  # noqa: BLE001
+        return
+    MS = BaseOutputTransport.MediaSender
+    if getattr(MS, "_probe_wrapped", False):
+        return
+    import time
+    import wave
+    from pathlib import Path
+    orig = MS.handle_audio_frame
+    st = {"wf": None}
+    d = Path(__file__).resolve().parent.parent / "output" / "cosy_noise"
+
+    async def wrapped(self, frame):
+        # RELIABLE capture: concatenate frame.audio at the transport INPUT into one wav (per-chunk
+        # rms is meaningless -- chunks aren't sample-aligned). Compare this to musetalk-out (clean)
+        # and delivered (garbled) to localize the corruption to inside-transport vs taps/queue.
+        try:
+            if st["wf"] is None:
+                sr = getattr(frame, "sample_rate", 24000) or 24000
+                d.mkdir(parents=True, exist_ok=True)
+                p = d / f"_handle_in_{time.strftime('%H%M%S')}.wav"
+                wf = wave.open(str(p), "wb"); wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sr)
+                st["wf"] = wf
+                logger.info(f"handle_audio INPUT wav capture -> {p.name}")
+            st["wf"].writeframes(frame.audio)
+        except Exception:  # noqa: BLE001
+            pass
+        return await orig(self, frame)
+
+    MS.handle_audio_frame = wrapped
+    MS._probe_wrapped = True
+    logger.info("handle_audio_frame IN-boundary probe installed.")
+
+
+def _relax_bot_vad_stop_timeout() -> None:
+    """THE steady-mode 'screech' root-cause fix (proven 2026-06-22).
+
+    pipecat's output transport (`MediaSender._next_frame`) fires `_bot_stopped_speaking()` if no
+    audio frame reaches its queue within `BOT_VAD_STOP_FALLBACK_SECS` (default **3s**) -- and that
+    handler does `self._audio_buffer = bytearray()`, DISCARDING whatever partial audio is buffered.
+
+    In `steady`/non-live sync the voice is held and released PACED TO RENDERED VIDEO frames. On a
+    long reply the shared GPU render can stall > 3s, which starves the transport's audio queue, so
+    the 3s timeout fires MID-TURN and discards the partial `_audio_buffer`. That discarded chunk is
+    an arbitrary (usually ODD) byte count, so the remaining int16 PCM stream is left misaligned by
+    an odd byte -> every subsequent sample straddles two real samples -> loud broadband noise to the
+    end of the turn (the "screech"). Proven by byte-diffing the captures: a 1049-byte deletion at
+    6.040s, speech otherwise bit-identical. `live` never hits this (it forwards audio continuously,
+    so the queue is never starved 3s).
+
+    We already drive an explicit `TTSStoppedFrame` per turn (`push_stop_frames=True` on the TTS
+    service), which signals bot-stopped on its own, so the 3s audio-gap fallback is redundant here.
+    Raise it so a render stall can never trigger the destructive discard -- a stall now just pauses
+    the voice (steady's accepted behaviour) and it resumes CONTIGUOUS (clean), instead of screeching.
+
+    The constant is read as a module global at `_next_frame()` call time (once per session, when the
+    audio task starts), so patching the module attribute before the client connects takes effect.
+    Knob: `BOT_VAD_STOP_FALLBACK_SECS` (seconds; <=0 leaves pipecat's 3s default)."""
+    try:
+        secs = float(os.getenv("BOT_VAD_STOP_FALLBACK_SECS", "600") or "600")
+    except ValueError:
+        secs = 600.0
+    if secs <= 0:
+        return
+    try:
+        from pipecat.transports import base_output
+        base_output.BOT_VAD_STOP_FALLBACK_SECS = secs
+        logger.info(f"BOT_VAD_STOP_FALLBACK_SECS -> {secs:g}s (steady-mode screech fix: a render "
+                    f"stall can no longer discard the partial audio buffer mid-turn).")
+    except Exception as e:  # noqa: BLE001 -- never block startup on this
+        logger.warning(f"Could not relax BOT_VAD_STOP_FALLBACK_SECS: {e!r}")
 
 
 def _configure_webrtc_video_bitrate() -> None:
