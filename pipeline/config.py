@@ -60,6 +60,26 @@ class Config:
     openrouter_base_url: str = _get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = _get("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite")
 
+    # --- LLM provider switch (deliberate fallback switch, like TTS_PROVIDER) ---
+    # weather_chain = a dedicated Chinese weather bot backed by the NCU LangServe
+    # endpoint; openrouter = the general-chat fallback. One flip reverts.
+    llm_provider: str = (_get("LLM_PROVIDER", "openrouter") or "openrouter").lower()
+    weather_chain_url: str = _get(
+        "WEATHER_CHAIN_URL", "http://140.115.54.87:8000/chain/resWeatherChain"
+    )  # base; the service appends /stream
+    weather_chain_model: str = _get("WEATHER_CHAIN_MODEL", "gemma3:27b") or "gemma3:27b"
+
+    # --- Avatar memory harness (fully local: qwen2.5:3b on CPU via Ollama) ---
+    # The chain is stateless, so the virtual human's growing memory lives here.
+    # CPU-pinned (qwen2.5:3b-cpu) so MuseTalk + CosyVoice keep the whole GPU.
+    avatar_memory: bool = (_get("AVATAR_MEMORY", "1") or "1").lower() in ("1", "true", "yes", "on")
+    avatar_memory_dir: str = _get("AVATAR_MEMORY_DIR", "state/avatar_memory") or "state/avatar_memory"
+    memory_llm_url: str = _get("MEMORY_LLM_URL", "http://localhost:11434/v1") or "http://localhost:11434/v1"
+    memory_llm_model: str = _get("MEMORY_LLM_MODEL", "qwen2.5:3b-cpu") or "qwen2.5:3b-cpu"
+    # Gated = only rewrite when the utterance looks context-dependent (keeps the
+    # fast path fast; CPU rewrite ~0.77s when it does fire). 0 = always rewrite.
+    memory_llm_gated: bool = (_get("MEMORY_LLM_GATED", "1") or "1").lower() in ("1", "true", "yes", "on")
+
     # --- TTS ---
     # CosyVoice (local CosyVoice2-0.5B streaming server) is the default -- a female
     # zero-shot voice, no per-token cloud cost. TTS_PROVIDER=elevenlabs falls back to
