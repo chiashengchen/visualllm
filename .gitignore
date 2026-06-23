@@ -19,3 +19,6 @@ local_services/musetalk_server/avatar_cache/
 
 # Runtime artifacts (renders, probes, reports) — regenerated, not source
 output/
+
+# Avatar memory (per-user runtime state: profile, summary, session log)
+state/

@@ -250,6 +250,11 @@ in order of effectiveness:
 | `COSYVOICE_VOICE` / `COSYVOICE_PACE_RATE` | `weather` / `1.3` | zero-shot speaker id / GPU-pacing cap (server-side) |
 | `DEEPGRAM_TTS_VOICE` | `aura-2-helena-en` | Aura voice when `TTS_PROVIDER=deepgram` |
 | `OPENROUTER_MODEL` | `google/gemini-2.5-flash-lite` | any OpenRouter model |
+| `LLM_PROVIDER` | `openrouter` | `weather_chain` = dedicated zh weather bot (NCU LangServe `/stream`); needs `LANGUAGE=zh`. One flip reverts to general chat |
+| `WEATHER_CHAIN_URL` / `WEATHER_CHAIN_MODEL` | `http://140.115.54.87:8000/chain/resWeatherChain` / `gemma3:27b` | the remote weather chain base URL (service appends `/stream`) + its Ollama model |
+| `AVATAR_MEMORY` | `1` | grow the virtual human's memory (profile + rolling summary) across conversations; `0` = off. Wrapped around the stateless chain |
+| `MEMORY_LLM_MODEL` / `MEMORY_LLM_URL` | `qwen2.5:3b-cpu` / `http://localhost:11434/v1` | local Ollama model that rewrites the query + distills the chat. **CPU-pinned** (0.77s/rewrite) so MuseTalk + CosyVoice keep the GPU; set `qwen2.5:3b` to use the GPU |
+| `MEMORY_LLM_GATED` / `AVATAR_MEMORY_DIR` | `1` / `state/avatar_memory` | gate the rewrite to context-dependent turns (0 = always) / where profile.json + summary.txt + session.jsonl live (gitignored) |
 | `AVATAR_REF` | `assets/avatar_female.png` | portrait (image or video) the MuseTalk server animates |
 | `MUSETALK_SYNC_MODE` | `steady` | video-master, synced start (user's pick + default). The old steady "screech" is FIXED (`_align_even` whole-sample guard + `BOT_VAD_STOP_FALLBACK_SECS` raise, `docs/PROBLEMS-AND-FIXES.md` P3). Tradeoff: under a long render stall the voice briefly pauses then resumes clean. `live` = audio-master (voice never pauses, lips trail ~0.75s) is the alternative |
 | `MUSETALK_FPS` / `MUSETALK_SIZE` | `20` / `512` | avatar output fps / frame px (shrinking SIZE does NOT cut MuseTalk compute). **Keep FPS a divisor of 16000** (8/10/16/20/25) so frame count = audio length; the `samples_for_frames` fix makes the current `12` correct too (P9) |
@@ -264,7 +269,9 @@ in order of effectiveness:
 | `TTFO_TARGET_SECONDS` | `8` | the < 8 s target for logging |
 
 Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY` +
-`ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`).
+`ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`). With `LLM_PROVIDER=weather_chain`
+the OpenRouter key isn't used; instead the NCU chain must be reachable and Ollama running
+with the `MEMORY_LLM_MODEL` (`qwen2.5:3b-cpu`).
 
 ---
 
