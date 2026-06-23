@@ -12,7 +12,7 @@ _Last updated: 2026-06-23 (avatar frame-deficit fix; baseline `cd88f20`)_
 |-------|---------|-------|
 | VAD | Silero (local) | pipeline |
 | STT | Deepgram nova-2 (`en`/`zh`/`th` by `LANGUAGE`) | cloud |
-| LLM | OpenRouter (`OPENROUTER_MODEL`) | cloud |
+| LLM | OpenRouter (`OPENROUTER_MODEL`) **default**, or a Chinese weather bot via `LLM_PROVIDER=weather_chain` | cloud / remote chain |
 | TTS | **CosyVoice2-0.5B** local streaming server (female zero-shot), on **vLLM in WSL** (TTFB ~1.1s) | `:8001`, repo `E:\Claude\cosyvoice-local-tts` |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | `:8002`, `musetalk` conda env |
 
@@ -20,6 +20,23 @@ WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-outpu
 
 TTS / ElevenLabs / Deepgram-Aura are deliberate **fallback switches** via `TTS_PROVIDER`, not
 multi-provider branching.
+
+## ⭐ Weather-bot mode + local memory harness (2026-06-23, new in this baseline)
+
+The LLM node is now a **deliberate switch** (`LLM_PROVIDER`, like `TTS_PROVIDER`): `openrouter`
+(default, general chat) or **`weather_chain`** — a dedicated Chinese weather bot backed by a remote
+NCU LangServe chain (`POST .../chain/resWeatherChain/stream`, `{"input":{"query","model"}}`). The
+chain is **stateless + Chinese-only**, so the virtual human's **growing memory lives in a fully-local
+harness wrapped around it** (`AVATAR_MEMORY=1`): a `MemoryStore` (profile + rolling summary + session
+log under `state/avatar_memory/`) that **rewrites** the utterance into a self-contained zh query via
+local **`qwen2.5:3b-cpu`** (Ollama, CPU-pinned so the GPU stays free; ~0.77s/rewrite) before the
+chain call, and **distills** the conversation into durable memory on disconnect *and* recovers
+leftover turns on startup. To run it: `LLM_PROVIDER=weather_chain LANGUAGE=zh`. NCU was down during
+build, so `scripts/mock_weather_chain.py` (:8077) is a local stand-in (same path + LangServe SSE,
+answers via CPU qwen) — verified live end-to-end (TTFO 5.7s). Full detail: the
+`project-visualllm-weather-chain-memory` memory; key files `local_services/weather_chain_llm.py`,
+`local_services/avatar_memory.py`, `pipeline/stages/llm.py`. Tooling: `scripts/probe_weather_chain.py`,
+`tools/chat-cpu.html` (a standalone CPU-model chat tester).
 
 ## ⭐ Current baseline (2026-06-23, commit `cd88f20`)
 
