@@ -289,3 +289,27 @@ count) and which TTS — running ahead of real-time — has already buffered. It
 deterministic repro (a 13.56 s turn stranded **1** audio chunk to the drain before, **0** after), then
 reverted because the user preferred the prior behavior. Re-apply if the blip is judged worse than
 whatever motivated the rollback.
+
+## P11 — With echo-guard on, voice stops triggering after the first turn (must type) ✅ FIXED (default flipped, 2026-06-23)
+
+**Symptom.** Speaking a turn produced no response — the user had to type into the client for it to
+work. Only after a bot turn; the first interaction could work, then the mic went dead.
+
+**Root cause (a 3-way interaction, all pre-existing).** Echo-guard uses pipecat's
+`AlwaysUserMuteStrategy`, which mutes the user on `BotStartedSpeakingFrame` and unmutes on
+`BotStoppedSpeakingFrame`. (1) In **steady** sync the voice is held/released *late* (paced to video),
+so the output transport sees audio arrive **after** the per-turn `TTSStoppedFrame` → it fires a
+**second `BotStartedSpeaking`** right after the early unmute → re-mutes the user. (2) The screech fix
+raised `BOT_VAD_STOP_FALLBACK_SECS` to 600 s, so the transport's audio-gap `BotStoppedSpeaking`
+never fires afterward. Net: after a turn the mute state machine is left `_bot_speaking=True` with no
+unmute → **mic stuck muted**, so STT gets no audio and no turn triggers. Typing bypasses the audio mute.
+Confirmed in the log: `... user is now unmuted` (on TTSStopped) immediately followed by
+`... user is now muted` while the avatar was still rendering the tail, with no unmute after.
+
+**Fix.** Flip the default to **`ECHO_GUARD=0`** (barge-in; no mute strategy, mic always live) in
+`pipeline/config.py`. Lowering `BOT_VAD_STOP_FALLBACK_SECS` was rejected (it reintroduces the P3
+screech). Verified: with `ECHO_GUARD=0` a synthesized voice turn triggered cleanly
+(`User started speaking` → LLM → `TTFO {count:1, pass:True}`) with **no** mute events. Tradeoff: the
+mic is always live → use headphones / OS echo cancellation. `ECHO_GUARD=1` remains valid **only** with
+`MUSETALK_SYNC_MODE=live`, where bot-speech framing tracks correctly. Proper half-duplex-in-steady
+support (mute on `TTSStarted`/unmute on `TTSStopped` instead of the transport frames) is a future option.

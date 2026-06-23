@@ -195,8 +195,8 @@ wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server
 ```
 
 Then open `http://localhost:7860/client/` (**trailing slash**), allow the mic, use **headphones**
-(echo-guard is on; `ECHO_GUARD=0` to allow barge-in), and talk. Fully close the tab between tries
-(sessions are serialized server-side).
+(echo-guard now defaults off / barge-in, so the mic is always live), and talk. Fully close the tab
+between tries (sessions are serialized server-side).
 
 **Sanity check without keys/network** (catches Pipecat import drift):
 ```bash
@@ -244,7 +244,7 @@ in order of effectiveness:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANGUAGE` | `en` | `en` / `zh` / `th` (STT + voice) |
-| `ECHO_GUARD` | `1` | mute the mic while the bot speaks (half-duplex); `0` allows barge-in |
+| `ECHO_GUARD` | `0` | barge-in (mic always live -- use headphones). `1` = half-duplex mute, but it's BROKEN under steady (mic stuck-muted after a turn, P11); only use `1` with `MUSETALK_SYNC_MODE=live` |
 | `TTS_PROVIDER` | `cosyvoice` | `elevenlabs` (multilingual cloud) / `deepgram` (Aura, en-only) fallbacks |
 | `COSYVOICE_URL` | `http://localhost:8001` | the CosyVoice server — set to the **WSL IP** for the vLLM server (NOT localhost; the relay buffers the stream), localhost for the Windows fallback |
 | `COSYVOICE_VOICE` / `COSYVOICE_PACE_RATE` | `weather` / `1.3` | zero-shot speaker id / GPU-pacing cap (server-side) |

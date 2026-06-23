@@ -155,8 +155,10 @@ pipecat 1.3.0, so `video_out_is_live = not config.avatar_sync_with_audio`. One f
 
 ## Known tradeoffs (accepted)
 
-- **Echo-guard on by default** → use headphones (or `ECHO_GUARD=0` to allow barge-in, relying on OS
-  echo cancellation).
+- **Echo-guard now defaults OFF** (`ECHO_GUARD=0`, barge-in) → **use headphones** (or OS echo
+  cancellation) so the live mic doesn't pick up the avatar. The half-duplex mute (`=1`) is broken
+  under the default `steady` sync mode — it leaves the mic stuck-muted after a turn so voice never
+  triggers; see `docs/PROBLEMS-AND-FIXES.md` P11. Only use `=1` with `MUSETALK_SYNC_MODE=live`.
 - **Single shared GPU** → under heavy contention the lips can trail the voice in `live` mode. A
   genuine fix needs a dedicated avatar GPU or a TensorRT'd MuseTalk (fp16 is on; no TRT yet).
 - **conda env cert store** is broken in `musetalk`/`tts` → curl-cache weights + set `SSL_CERT_FILE`

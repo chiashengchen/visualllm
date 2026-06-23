@@ -46,11 +46,15 @@ class Config:
     ttfo_target_s: float = _get_float("TTFO_TARGET_SECONDS", "8")
 
     # --- product mode ---
-    # ECHO_GUARD=1 mutes the mic while the bot is speaking (half-duplex), so the
-    # avatar's own voice leaking into the mic can't trigger a barge-in that cuts the
-    # render mid-turn. Trade-off: you can't interrupt the bot while it talks. Set 0
-    # to allow genuine barge-in (and rely on headphones/echo cancellation).
-    echo_guard: bool = (_get("ECHO_GUARD", "1") or "1").lower() in ("1", "true", "yes", "on")
+    # ECHO_GUARD=1 mutes the mic while the bot is speaking (half-duplex). DEFAULT IS NOW 0
+    # (barge-in, mic always live) because the half-duplex mute is BROKEN under the default
+    # steady sync mode: steady delays the audio, so a 2nd BotStartedSpeaking fires after
+    # TTSStopped and -- with BOT_VAD_STOP_FALLBACK_SECS raised to 600 by the screech fix --
+    # no BotStopped follows, leaving the mic STUCK MUTED after a turn (voice never triggers;
+    # see docs/PROBLEMS-AND-FIXES.md P11). With 0 the mic stays live -> use headphones (or OS
+    # echo cancellation) so the avatar's voice doesn't barge in on itself. Set 1 only with
+    # MUSETALK_SYNC_MODE=live, where the mute strategy still tracks bot speech correctly.
+    echo_guard: bool = (_get("ECHO_GUARD", "0") or "0").lower() in ("1", "true", "yes", "on")
 
     # --- STT (Deepgram) ---
     deepgram_api_key: str | None = _get("DEEPGRAM_API_KEY")

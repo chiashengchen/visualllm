@@ -185,8 +185,10 @@ audio/video drift.
 
 - Keep stage factories single-provider and thin; config is `.env`-driven only.
 - Comments state the *why* (latency, a Pipecat quirk, a hardware constraint) — match that voice.
-- Accepted tradeoffs (see `STATUS.md`): echo-guard is on by default (avatar self-talk on
-  speakers — use headphones, or `ECHO_GUARD=0` to allow barge-in). On the single shared GPU the
+- Accepted tradeoffs (see `STATUS.md`): echo-guard defaults OFF (`ECHO_GUARD=0`, barge-in — use
+  headphones) because the half-duplex mute (`=1`) is broken under the default `steady` sync (mic
+  stuck-muted after a turn, `docs/PROBLEMS-AND-FIXES.md` P11); `=1` is valid only with
+  `MUSETALK_SYNC_MODE=live`. On the single shared GPU the
   lips can trail the voice under load in `live` mode — that's the cost of `live` never freezing; the
   SAFE next lever is bounding the avatar server's `out_q`, **never** re-locking the voice (locked
   sync froze it — see STATUS.md).
