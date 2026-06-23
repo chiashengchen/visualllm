@@ -151,10 +151,20 @@ GPU contention is irrelevant here. Next connect, the greeting is personalized fr
 ### 9. Config + degradation (hardening)
 
 New config (all `.env`): `AVATAR_MEMORY` (1=on, default), `MEMORY_LLM_URL`
-(`http://localhost:11434/v1`), `MEMORY_LLM_MODEL` (`qwen2.5:3b`), `MEMORY_LLM_GATED` (1),
-`AVATAR_MEMORY_DIR` (`state/avatar_memory`). **Degrade cleanly**: if Ollama is down or a
+(`http://localhost:11434/v1`), `MEMORY_LLM_MODEL` (**`qwen2.5:3b-cpu`**, default), `MEMORY_LLM_GATED`
+(1), `AVATAR_MEMORY_DIR` (`state/avatar_memory`). **Degrade cleanly**: if Ollama is down or a
 rewrite/distill call fails/times out, pass the raw utterance through and skip distillation — the
 weather bot still works, just without memory that turn. Memory never blocks or breaks a turn.
+
+**CPU-pinned by default (decided + measured 2026-06-23).** The memory model runs on **CPU**, not
+the GPU, so MuseTalk + CosyVoice keep the whole 16 GB card. One-time setup (done on this box):
+```
+printf 'FROM qwen2.5:3b\nPARAMETER num_gpu 0\n' > qwen-cpu.Modelfile
+ollama create qwen2.5:3b-cpu -f qwen-cpu.Modelfile
+```
+Measured: gated rewrite **0.77 s** on CPU, `ollama ps` = `100% CPU`, output identical to GPU. To
+move it back to GPU (if the CPU ever bottlenecks), just set `MEMORY_LLM_MODEL=qwen2.5:3b`. Distill
+is slower on CPU (~10–20 s) but runs post-disconnect, off the hot path.
 
 ## Data flow (one turn, with memory)
 
@@ -178,10 +188,10 @@ mic → STT(zh) → aggregator.user() → LLMContextFrame
 - **TTFO < 8 s may not hold.** `gemma3:27b` on Ollama in Taiwan + a likely weather-retrieval step
   may be slower than OpenRouter; a gated rewrite adds one short local-qwen hop on context-dependent
   turns. Streaming first-token mitigates; measure with `scripts/measure`.
-- **GPU contention.** The 16 GB card is already ~13.4/16 used (MuseTalk + CosyVoice-vLLM); qwen2.5:3b
-  adds ~2.2 GB and ran 100% GPU in the test. Gating keeps rewrites rare + short, but if the avatar
-  stalls during a rewrite the escape hatch is pinning qwen to CPU (`OLLAMA`/`num_gpu 0`) — distill
-  is end-of-conversation so CPU is fine there regardless.
+- **GPU contention — mitigated by the CPU-pin default.** The 16 GB card is already ~13.4/16 used
+  (MuseTalk + CosyVoice-vLLM). Rather than risk a rewrite competing with the render, the memory
+  model is CPU-pinned (`qwen2.5:3b-cpu`, `num_gpu 0`) — measured 0.77 s/rewrite, zero GPU use. GPU
+  is available as an opt-in (`MEMORY_LLM_MODEL=qwen2.5:3b`) only if the CPU ever bottlenecks.
 - **Windows UTF-8 trap (verified).** Inline `curl -d` with Chinese, and `print()` to the cp1252
   console, both corrupt the bytes (caused a false "model can't read Chinese" scare). All Chinese
   must travel as real UTF-8 (httpx/JSON `.encode("utf-8")`); never inline-curl Chinese on Windows.
