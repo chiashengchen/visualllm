@@ -3,7 +3,7 @@
 > **⚠️ Partly historical (the original cloud-API setup guide).** The current default stack is
 > mostly **local**: TTS = **CosyVoice2 on vLLM in WSL** (not ElevenLabs), avatar = **MuseTalk**
 > local server (not Simli). The only paid APIs still required are **Deepgram** (STT) and
-> **OpenRouter** (LLM); ElevenLabs is now an optional fallback. See **`STATUS.md`** / **`TECH_STACK.md`**
+> **OpenRouter** (LLM); ElevenLabs is now an optional fallback. See **`STATUS.md`**
 > for the live stack and **`WORKFLOW.md` §8** for the `.env` reference. The provider-shopping
 > details below are kept for the cloud-fallback path.
 

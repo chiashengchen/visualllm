@@ -136,6 +136,13 @@ To understand either side you must read both (`musetalk_video.py` + `musetalk_se
   segment (a different shape than mid-turn) → a ~16s GPU spike on the first segment of every turn →
   lips start ~5s late. `False` removes it (steady-state per-frame time unchanged). See
   `docs/PROBLEMS-AND-FIXES.md` P1; diagnose render timing with `MUSETALK_PROFILE=1`.
+- **Frame count = `audio_sec × fps` (keep `MUSETALK_FPS` a divisor of 16000).** Each render segment
+  is sized by `MuseTalkEngine.samples_for_frames(n)=ceil(n*16000/fps)` so the renderer
+  (`floor(len/sr*fps)`) yields exactly `SEG_FRAMES` per batch. The old `int(16000/fps)*SEG_FRAMES`
+  sizing truncated at fps that don't divide 16000 (e.g. 12 → 7 frames/8-frame batch), losing ~12.5%
+  of frames over a turn so the lips finished ~1–2s before the voice. See `docs/PROBLEMS-AND-FIXES.md`
+  P9. (A leftover-audio blip ~1–2s *after* the turn is a separate, **known + unfixed** issue — P10,
+  fix reverted by preference.)
 - **OS env only.** The server reads `AVATAR_REF` / `MUSETALK_SIZE` / `MUSETALK_FPS` from the OS
   environment (no `python-dotenv` in its conda env); `scripts/run.ps1` propagates them from `.env`.
 
@@ -174,6 +181,11 @@ keeps the downstream PCM whole-sample. See `docs/PROBLEMS-AND-FIXES.md` P3.
 ```bash
 # 1. CosyVoice TTS server — vLLM in WSL (TTFB ~1.1s). Then set COSYVOICE_URL to the WSL IP.
 wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh"   # :8001
+#   vLLM shares the 16GB card with MuseTalk. gpu_memory_utilization (COSYVOICE_VLLM_GPU_UTIL,
+#   default 0.3, in the cosyvoice repo) must be high enough for vLLM's ~4GB footprint or it
+#   crashes "No available memory for the cache blocks" (0.2 was too low). Raise toward 0.35 if a
+#   heavy GPU app is closed; lower if MuseTalk OOMs. The log line "Available KV cache memory" must
+#   be positive.
 
 # 2 + 3. MuseTalk avatar server + pipeline (one script: starts both, propagates the MuseTalk knobs)
 .\scripts\run.ps1
@@ -240,7 +252,8 @@ in order of effectiveness:
 | `OPENROUTER_MODEL` | `google/gemini-2.5-flash-lite` | any OpenRouter model |
 | `AVATAR_REF` | `assets/avatar_female.png` | portrait (image or video) the MuseTalk server animates |
 | `MUSETALK_SYNC_MODE` | `steady` | video-master, synced start (user's pick + default). The old steady "screech" is FIXED (`_align_even` whole-sample guard + `BOT_VAD_STOP_FALLBACK_SECS` raise, `docs/PROBLEMS-AND-FIXES.md` P3). Tradeoff: under a long render stall the voice briefly pauses then resumes clean. `live` = audio-master (voice never pauses, lips trail ~0.75s) is the alternative |
-| `MUSETALK_FPS` / `MUSETALK_SIZE` | `20` / `512` | avatar output fps / frame px (shrinking SIZE does NOT cut MuseTalk compute) |
+| `MUSETALK_FPS` / `MUSETALK_SIZE` | `20` / `512` | avatar output fps / frame px (shrinking SIZE does NOT cut MuseTalk compute). **Keep FPS a divisor of 16000** (8/10/16/20/25) so frame count = audio length; the `samples_for_frames` fix makes the current `12` correct too (P9) |
+| `COSYVOICE_VLLM_GPU_UTIL` | `0.3` | *(set in the **cosyvoice repo**, not this `.env`)* fraction of the 16GB card vLLM may use. 0.2 was too low (< its ~4GB footprint → KV cache crash); 0.3 fits alongside MuseTalk. Raise to ~0.35 with more free VRAM |
 | `MUSETALK_LEAD_FRAMES` | `14` | video-start cushion — **load-bearing** (lower starves the queue → freeze) |
 | `MUSETALK_FEED_BURST_S` | `1.0` | burst the first 1s of a turn's audio un-paced → renderer not starved at turn start (lip-start lag ~1.9s→~0.8s; `docs/PROBLEMS-AND-FIXES.md` P2) |
 | `MUSETALK_END_TAIL_FRAMES` | `10` | ease-out neutral frames after speech (softer mouth-close) |
@@ -275,7 +288,9 @@ Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Avatar shows but **won't talk** (voice + chat) | TTS provider/server down or out of credits | Check the CosyVoice server (:8001) / provider account; swap `TTS_PROVIDER` |
+| Avatar shows but **won't talk** (voice + chat) | TTS server down — most often CosyVoice crashed on the **shared GPU** (vLLM "No available memory for the cache blocks") | Check `:8001` is up (`wsl ... ss -ltn`); if it crashed, free VRAM and/or raise `COSYVOICE_VLLM_GPU_UTIL`. The pipeline log shows "Cannot connect to host …:8001". Or swap `TTS_PROVIDER` |
+| Lips **finish ~1–2s before the voice** on long replies | per-segment frame deficit when `MUSETALK_FPS` doesn't divide 16000 | Fixed (P9, `samples_for_frames`); keep FPS a divisor of 16000. Verify warmup logs `8 frames/segment`, not 7 |
+| **Leftover-audio blip** ~1–2s after the turn ends | steady's floor-cap strands the final sub-frame to the delayed `video_end` drain | **Known issue, fix reverted by preference** (P10). Re-apply = `int()`→`ceil()` in `musetalk_video.py::_advance` |
 | **Avatar not showing** at all | MuseTalk server (:8002) down | Start the avatar server (the pipeline needs it) |
 | Lips start **~5s late** + render falls behind on long replies | `cudnn.benchmark=True` (per-turn re-autotune spike) | Keep it `False` in `musetalk_server/app.py` |
 | Voice **screeches** mid-reply in steady mode | pipecat discarding the odd partial audio buffer on a render-stall gap | Keep `BOT_VAD_STOP_FALLBACK_SECS` high + `_align_even` (both already in) |

@@ -33,6 +33,14 @@ cause of the avatar lip-lag. The pipeline reaches it via `COSYVOICE_URL` set to 
 PyTorch server is the fallback (set `COSYVOICE_URL=http://localhost:8001` + start it). Full build
 notes + gotchas: the `project-visualllm-cosyvoice-vllm` memory.
 
+**Shared-GPU VRAM (why "won't talk" can mean CosyVoice crashed):** vLLM and MuseTalk share the one
+16GB card. vLLM's `gpu_memory_utilization` (env `COSYVOICE_VLLM_GPU_UTIL`, **default `0.3`**, set in
+the cosyvoice repo) must exceed vLLM's own ~4GB footprint or load crashes with "No available memory
+for the cache blocks" (the old hardcoded `0.2` = 3.26GB was too low). If the avatar shows but the bot
+is silent, first check `:8001` is actually up — the pipeline log shows "Cannot connect to host …:8001".
+Free VRAM (close a heavy GPU app) or nudge the util fraction; the "Available KV cache memory" log line
+must be positive.
+
 Each stage is a thin single-provider factory in `pipeline/stages/` chosen by `.env` — these
 are **deliberate fallback switches, not multi-provider branching**:
 - `TTS_PROVIDER` = `cosyvoice` (default) | `elevenlabs` | `deepgram` (the last two are cloud fallbacks).
@@ -44,7 +52,11 @@ default; `live` = audio-master, voice instant + lips trail ~0.75s, can never pau
 render-stall gap (`BOT_VAD_STOP_FALLBACK_SECS`); see `docs/PROBLEMS-AND-FIXES.md` P3 +
 `main.py::_relax_bot_vad_stop_timeout` and `musetalk_video.py::_align_even`. Remaining steady
 tradeoff: under a long render stall the voice briefly **pauses** then resumes clean — switch to
-`live` if that pause is worse than the lip trail), `MUSETALK_FPS` (20),
+`live` if that pause is worse than the lip trail), `MUSETALK_FPS` (**12** now; **keep it a divisor
+of 16000** — 8/10/16/20/25 — so frame count = audio length. The server's `samples_for_frames` ceil
+sizing makes 12 correct anyway; the old `int(16000/fps)` truncation lost ~1 frame/segment → lips
+finished ~1–2s early, `docs/PROBLEMS-AND-FIXES.md` P9. NOTE: a leftover-audio blip ~1–2s *after* the
+turn is a separate **known/unfixed** issue, P10 — fix reverted by preference),
 `MUSETALK_FEED_BURST_S` (1.0 — bursts the first 1s of a turn's audio un-paced so the renderer
 isn't starved at turn start; cut lip-start lag ~1.9s→~0.8s), `MUSETALK_END_TAIL_FRAMES` (ease-out
 neutral frames after speech), `MUSETALK_SIZE` (512 — shrinking it does NOT cut MuseTalk compute),

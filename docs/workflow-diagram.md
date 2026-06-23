@@ -152,7 +152,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S1["Avatar shows but won't talk<br/>(voice + chat dead)"] -.-> F1["TTS provider out of credits/quota<br/>→ swap TTS_PROVIDER or top up key"]
+    S1["Avatar shows but won't talk<br/>(voice + chat dead)"] -.-> F1["TTS server down — usually CosyVoice crashed on the<br/>shared GPU (vLLM 'No available memory for cache blocks')<br/>→ check :8001; free VRAM / raise COSYVOICE_VLLM_GPU_UTIL;<br/>or swap TTS_PROVIDER / top up key"]
     S2["Avatar not showing at all"] -.-> F2["Avatar server (:8002) down<br/>→ start it; the pipeline needs it"]
     S3["Lips drift / trail the voice"] -.-> F3["Shared-GPU contention (live mode, no freeze)<br/>→ accepted tradeoff; next safe lever = bound out_q<br/>NEVER re-lock the voice (locked sync froze it)"]
     S4["Video stutters remotely, audio fine"] -.-> F4["WAN: oversized stream<br/>→ fit-the-stream (smaller size + WEBRTC_VIDEO_BITRATE_MAX)<br/>then small CLIENT_JITTER_BUFFER_MS"]

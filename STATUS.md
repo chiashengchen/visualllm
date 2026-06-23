@@ -1,6 +1,6 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-22 (cleanup: MuseTalk-only)_
+_Last updated: 2026-06-23 (avatar frame-deficit fix; baseline `cd88f20`)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the processes, the turn
 > flow, the avatar wire contract, running locally + remote, config reference).
@@ -20,6 +20,33 @@ WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-outpu
 
 TTS / ElevenLabs / Deepgram-Aura are deliberate **fallback switches** via `TTS_PROVIDER`, not
 multi-provider branching.
+
+## ⭐ Current baseline (2026-06-23, commit `cd88f20`)
+
+Latest work — three things landed/changed today (full write-ups: `docs/PROBLEMS-AND-FIXES.md`
+P9/P10 + the run notes below):
+
+1. **Avatar finished ~1–2s BEFORE the audio on long replies — FIXED (P9).** The render server sized
+   each segment as `int(16000/fps)*SEG_FRAMES`, but the renderer counts frames as
+   `floor(len/sr*fps)`. At an fps that doesn't divide 16000 (e.g. **12**: `int(16000/12)`→1333), an
+   8-frame batch rendered **7** → a ~12.5% frame deficit accumulating over the turn, so the lips ran
+   short. Fix = `MuseTalkEngine.samples_for_frames(n)=ceil(n*16000/fps)` (server `app.py`), wired into
+   stream init / `config` / `_warmup` / the `speech_end` tail-pad. Frame count is now `audio_sec*fps`
+   end-to-end. **Keep `MUSETALK_FPS` a divisor of 16000** (8/10/16/20/25…); the fix makes 12 correct
+   anyway. Verified: warmup `7→8 frames/segment`; a 13.56s reply renders **163** frames (was 141).
+2. **Leftover-audio blip ~1–2s AFTER the turn — KNOWN ISSUE, fix REVERTED by preference (P10).** Once
+   the frame count was correct, a fraction-of-a-second of audio still played ~1–2s late (steady's
+   `_advance` floor-cap stranded the final sub-frame of audio to the delayed `video_end` drain). A
+   `ceil`-the-cap fix was implemented + verified, then **rolled back — the prior behavior was judged
+   better**, so the baseline keeps the blip. Root cause + the one-line re-apply path are in
+   `docs/PROBLEMS-AND-FIXES.md` P10.
+3. **CosyVoice wouldn't start on the shared GPU — FIXED (config).** vLLM's `gpu_memory_utilization`
+   was hardcoded `0.2` (a 3.26GB ceiling, below vLLM's own ~4GB footprint → KV cache negative → crash:
+   "No available memory for the cache blocks"). Now **env-overridable, default `0.3`**
+   (`COSYVOICE_VLLM_GPU_UTIL`, in the **separate `E:\Claude\cosyvoice-local-tts` repo**) → +0.86GB KV /
+   75k tokens, fits the ~5.4GB free alongside MuseTalk (it grabs ~2.8GB, leaving ~2.5GB). The 3 GPU
+   services (MuseTalk + CosyVoice-vLLM + the desktop) share one 16GB card — if either errors after
+   opening another heavy GPU app, that's the VRAM ceiling: close something or nudge the util fraction.
 
 ## ⭐ Cleanup (2026-06-22): collapsed to one stack — MuseTalk-only
 
