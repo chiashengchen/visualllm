@@ -32,6 +32,7 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipeline.config import config
 from pipeline.metrics import TtfoMeter
 from pipeline.stages import build_avatar, build_llm, build_stt, build_tts, build_vad_params
+from local_services.avatar_memory import MemoryStore
 
 
 async def run_bot(transport: BaseTransport) -> None:
@@ -42,13 +43,33 @@ async def run_bot(transport: BaseTransport) -> None:
 
     ensure_file_sink("pipeline")
 
+    _llm_label = "WeatherChain" if config.llm_provider == "weather_chain" else "OpenRouter"
     logger.info(
-        f"Pipeline: Deepgram STT -> OpenRouter LLM -> CosyVoice TTS -> MuseTalk avatar "
+        f"Pipeline: Deepgram STT -> {_llm_label} LLM -> CosyVoice TTS -> MuseTalk avatar "
         f"(lang={config.language})"
     )
 
     stt = build_stt(config)
-    llm = build_llm(config)
+    # Memory harness: only for the weather bot, only when enabled. Wrapped around the
+    # stateless chain (the chain can't hold memory); rewrites the query + distills the
+    # conversation. Local qwen on CPU, so the GPU stays free for the avatar.
+    memory = None
+    if config.llm_provider == "weather_chain" and config.avatar_memory:
+        memory = MemoryStore(
+            base_dir=config.avatar_memory_dir,
+            llm_url=config.memory_llm_url,
+            llm_model=config.memory_llm_model,
+            gated=config.memory_llm_gated,
+            enabled=True,
+        )
+        logger.info(
+            f"Avatar memory ON (model={config.memory_llm_model}, gated={config.memory_llm_gated})."
+        )
+        # Startup recovery: fold in any turns a crashed prior session left behind
+        # (instant no-op on a normal boot). Runs before any client connects, so the
+        # next conversation starts from a clean session.
+        await memory.distill_pending()
+    llm = build_llm(config, memory)
     tts = build_tts(config)
     avatar = build_avatar(config)
     meter = TtfoMeter(target_s=config.ttfo_target_s)
@@ -96,7 +117,11 @@ async def run_bot(transport: BaseTransport) -> None:
     async def _warmup_llm():
         # Open the HTTPS connection to the LLM now, so the TLS handshake is done
         # before the user's first message (kills cold start). OpenRouter is
-        # OpenAI-compatible, so the chat.completions warmup applies.
+        # OpenAI-compatible, so the chat.completions warmup applies. The weather chain
+        # has no cheap warmup ping (and no _client), so skip it there -- this warmup
+        # would crash on the custom service otherwise.
+        if config.llm_provider == "weather_chain":
+            return
         model = getattr(getattr(llm, "_settings", None), "model", None)
         try:
             await llm._client.chat.completions.create(
@@ -117,6 +142,11 @@ async def run_bot(transport: BaseTransport) -> None:
             greeting = "สวัสดีค่ะ พร้อมแล้วค่ะ พูดได้เลย"
         elif config.is_mandarin:
             greeting = "嗨，我準備好了，請說。"
+            # Personalize from memory if we already know the returning user.
+            if memory is not None:
+                hint = memory.greeting_hint()
+                if hint:
+                    greeting = "嗨，歡迎回來！" + hint  # "Hi, welcome back! " + hint
         else:
             greeting = "Hi, I'm ready — go ahead."
         # Speak a fixed greeting directly via TTS (no LLM round-trip needed).
@@ -125,6 +155,11 @@ async def run_bot(transport: BaseTransport) -> None:
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(transport, client):
         logger.info(f"Client disconnected. TTFO summary: {meter.summary()}")
+        if memory is not None:
+            try:
+                await memory.distill_and_save()  # grow the human's memory after the chat
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"memory distill skipped ({type(e).__name__})")
         await task.cancel()
 
     await PipelineRunner().run(task)
