@@ -1,0 +1,7 @@
+funasr>=1.1.0
+torch                # CPU build is fine (FUNASR_DEVICE=cpu)
+torchaudio
+opencc-python-reimplemented
+fastapi
+uvicorn[standard]
+numpy
