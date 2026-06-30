@@ -89,7 +89,11 @@ def main() -> int:
     print(_check("Silero VAD construct", build_vad_params))
 
     print("\n== Stages (single stack) ==")
-    print(_check("stt  (Deepgram)", lambda: build_stt(config)))
+    print(_check(f"stt  ({config.stt_provider})", lambda: build_stt(config)))
+    # Cover the offline-STT import path even when Deepgram is the active provider, so a
+    # Pipecat path move (SegmentedSTTService / utils.time) is caught on the default stack.
+    print(_check("stt  (funasr wrapper import)",
+                 lambda: __import__("local_services.funasr_stt", fromlist=["FunasrSTTService"])))
     print(_check("llm  (OpenRouter)", lambda: build_llm(config)))
     print(_check(f"tts  ({config.tts_provider})", lambda: build_tts(config)))
     print(_check("avatar (musetalk)", lambda: build_avatar(config)))
