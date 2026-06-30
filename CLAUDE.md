@@ -110,6 +110,12 @@ holds the static neutral portrait between turns — the user's pick. `1` = the s
 loop. Server reads it from the OS env, so `run.ps1` propagates it), `MUSETALK_SIZE` (512 — shrinking
 it does NOT cut MuseTalk compute),
 `MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
+`MUSETALK_TRT` (**0** default = PyTorch render; **1** = fp16 TensorRT engines for the UNet+VAE-decoder,
+**~2.4× faster GPU render / 1.83× end-to-end, SSIM 1.0 = identical lips** — built + validated 2026-06-30.
+Engines are a prebuilt artifact in `trt_cache/` (gitignored, ~1.75GB, build via `trt_build.py`; needs
+`tensorrt-cu12` + `onnx` in the musetalk env). Costs ~+0.5GB VRAM (torch fallback stays resident), so its
+win is latency/headroom, NOT footprint. **To use the headroom, pair `=1` with a higher `MUSETALK_FPS`.**
+Any engine-load failure falls back to torch. Full recipe: `docs/superpowers/plans/2026-06-30-musetalk-tensorrt.md`),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
 the shared GPU), `CLIENT_JITTER_BUFFER_MS` (raise only for a remote/WAN viewer),
 `WEBRTC_VIDEO_BITRATE_MAX` (caps aiortc's VP8 ceiling so the video fits a WAN link), and

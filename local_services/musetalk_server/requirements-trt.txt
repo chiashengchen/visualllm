@@ -1,0 +1,13 @@
+# TensorRT render path for the MuseTalk server (MUSETALK_TRT=1). Install INTO the
+# `musetalk` conda env. The libs come from NVIDIA's index, not PyPI, so the
+# --extra-index-url is REQUIRED (a bare `pip install tensorrt-cu12` fails
+# metadata-generation on tensorrt_cu12_libs).
+#
+#   E:\miniconda3\envs\musetalk\python.exe -m pip install -r requirements-trt.txt --extra-index-url https://pypi.nvidia.com
+#
+# Verified 2026-06-30 on the Blackwell RTX 5060 Ti (sm_120), torch 2.11+cu128, Python 3.10.
+# After install, build the engines once (offline, ~7 min):
+#   see docs/superpowers/plans/2026-06-30-musetalk-tensorrt.md (trt_export.py + trt_build.py)
+tensorrt-cu12==10.13.3.9
+onnx>=1.22            # legacy TorchScript ONNX exporter needs onnx to serialize
+scikit-image          # only for the SSIM quality gate (scripts/_trt_quality_check.py)

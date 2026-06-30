@@ -111,6 +111,32 @@ them; the real working set is ~4.8GB (verified stable across repeated turns, doe
 > by dropping stale frames instead of accumulating a backlog — verified smooth (12fps, no freeze) on the
 > WebRTC delivery path. Do **not** re-lock the voice to video (that froze it).
 
+## ⭐ MuseTalk TensorRT render path — BUILT + VALIDATED (2026-06-30, `MUSETALK_TRT=1`)
+
+The compute-contention lever (spec #2) is implemented and measured. The UNet + VAE-decoder run as
+fp16 TensorRT engines instead of PyTorch; whisper/PE/compositing stay torch. `MUSETALK_TRT=1` switches
+it on (default **0** = the proven torch path; any engine load failure falls back to torch).
+
+| Metric | PyTorch | TensorRT | Result |
+|--------|---------|----------|--------|
+| render_segment end-to-end | 43.2 ms/frame | 23.6 ms/frame | **1.83×** |
+| GPU compute only (ex-composite) | ~33 ms/frame | ~13.5 ms/frame | **~2.4×** |
+| Frame quality (SSIM vs torch, composited) | — | — | **1.0000 (identical)** |
+| Contention (full stack, vLLM streaming) | baseline | 12.0 fps, no freeze | keeps up |
+
+- **Headroom is the point:** at 12 fps (83 ms budget) the render now uses ~28% of budget (was ~52%) —
+  spare capacity for higher fps/quality, a near-zero-trail `live`, or freeing SMs for zh TTS.
+- **VRAM: TRT costs ~+0.5 GB, not less** (full-stack peak ~9.95 GB vs ~9.4 GB torch). With `MUSETALK_TRT=1`
+  the torch UNet/VAE stay resident as the runtime fallback **plus** the ~1.75 GB engines. TRT's win is
+  latency, not footprint (as the spec predicted). **Follow-up to reclaim it:** free the torch UNet/VAE
+  after engines load (drops the fallback) → the TRT path would then be *smaller* than torch.
+- **Build:** engines are a prebuilt artifact (`trt_cache/{unet,vae}.engine`, ~1.75 GB, ~7 min to build
+  via `trt_build.py`; gitignored). Needs `tensorrt-cu12` (`--extra-index-url https://pypi.nvidia.com`)
+  + `onnx` in the `musetalk` env. Blackwell `sm_120` confirmed. Full recipe:
+  `docs/superpowers/plans/2026-06-30-musetalk-tensorrt.md`.
+- **To actually USE the headroom:** enable `MUSETALK_TRT=1` and raise `MUSETALK_FPS` (16/20 now affordable)
+  — the render has the budget for it. Default stays torch+12fps (the proven smooth baseline).
+
 ## What does NOT work / was DISPROVEN
 
 - **`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is a NO-OP on Windows.** `run.ps1` sets it, but

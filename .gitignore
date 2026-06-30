@@ -16,6 +16,8 @@ checkpoints/
 # Local MuseTalk (cloned upstream + multi-GB weights + caches)
 local_services/musetalk_server/vendor/
 local_services/musetalk_server/avatar_cache/
+# TensorRT artifacts (~1.75GB engines + ONNX; prebuilt per-box, not source — build via trt_build.py)
+local_services/musetalk_server/trt_cache/
 
 # Runtime artifacts (renders, probes, reports) — regenerated, not source
 output/
