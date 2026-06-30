@@ -1,6 +1,6 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-30 (**Added local OFFLINE STT** — `STT_PROVIDER=sherpa` (sherpa-onnx streaming, in-process, CPU/~0 VRAM, recommended) + `funasr` (SenseVoice segmented, `:8004`); default stays Deepgram. On branch `feat/offline-stt-sensevoice`, not pushed. See the session note below. Earlier: **LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan — fixes the CPU-contention regression. Investigated a **Chinese-only voice-delay**: root cause is CosyVoice's zh first-chunk TTFB (~2.3s vs en ~1.1s), NOT the LLM/avatar — but the fix conflicts with the avatar on the shared GPU, so it's left UNRESOLVED, see the 2026-06-30 session below + P15. Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
+_Last updated: 2026-06-30 (**VRAM trim + MuseTalk TensorRT** — see the session note immediately below. The shared 16GB card now fits the stack in ~8.4GB working (was ~15.7GB) via reversible knobs, and the avatar render has an optional fp16 TensorRT path (`MUSETALK_TRT=1`, ~2.4× GPU / SSIM 1.0). Branch `feat/offline-stt-sensevoice`, **pushed**. Earlier this day: **Added local OFFLINE STT** — `STT_PROVIDER=sherpa` (sherpa-onnx streaming, in-process, CPU/~0 VRAM, recommended) + `funasr` (SenseVoice segmented, `:8004`); default stays Deepgram. **LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan. Investigated a **Chinese-only voice-delay** (CosyVoice zh TTFB ~2.3s vs en ~1.1s; conflicts with the avatar on the shared GPU → UNRESOLVED, P15). Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the processes, the turn
 > flow, the avatar wire contract, running locally + remote, config reference).
@@ -22,6 +22,21 @@ WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-outpu
 TTS providers (`cosyvoice` default · `moss` · `elevenlabs` · `deepgram`) and LLM providers
 (`openrouter` · `weather_chain`) are deliberate **single-provider switches** via `.env`, not
 multi-provider branching. **Easiest way to change any of this: the config panel (`:7870`).**
+
+## ⭐ Session 2026-06-30 (latest): VRAM trim ~15.7GB→~8.4GB + MuseTalk TensorRT path
+
+Two pieces, both on `feat/offline-stt-sensevoice` (**pushed**), all reversible (`.env`/arg knobs, defaults kept).
+Full measured tables: `docs/gpu-memory-notes.md`. Specs/plans: `docs/superpowers/{specs,plans}/2026-06-30-vram-trim-and-lag-revisit*` + `…-musetalk-tensorrt*`.
+
+**1. VRAM trim (measured stop-and-diff): full stack ~15,676 → ~9,362 MiB; free VRAM ~375 → ~6,689 MiB.**
+- **vLLM** `COSYVOICE_VLLM_GPU_UTIL` 0.30→**0.16** + new **`COSYVOICE_VLLM_MAX_LEN=2048`** (baked into `run_vllm_server.sh`): 6029→3735 MiB. CosyVoice's KV was sized for the 32k-token default but TTS uses one short sentence — capping max-len makes the low util safe, so the **old "~0.25 floor" is OBSOLETE** (0.12 fits an 8GB card; verified). vLLM-side `model.py` plumbing is a **local gitignored vendor patch** (can't be pushed; re-apply on a fresh clone).
+- **MuseTalk** `torch.cuda.empty_cache()` after warmup: working set 8761→~4844 MiB (the gap was load-time transients, not weights). `MUSETALK_BATCH=4` optionally shaves ~1GB more.
+- **Corrected/DISPROVEN:** desktop is only ~0.9GB (closing apps reclaims ~nothing); `PYTORCH_CUDA_ALLOC_CONF=expandable_segments` is a **no-op on Windows**; the prior "stack needs ~14.7GB / reclaims nothing" verdict was WRONG.
+
+**2. Lag revisit:** the ~4s trail was always COMPUTE contention, not VRAM. User confirmed **`steady` "is good now" on `/client`** → lag goal satisfied. New **`MUSETALK_OUT_Q`** knob bounds the `live`-mode trail (tested 24) for anyone who wants it; **steady stays default**.
+
+**3. MuseTalk TensorRT render path — BUILT + VALIDATED (`MUSETALK_TRT=1`, default 0 + torch fallback).**
+UNet + VAE-decoder run as fp16 TRT engines (whisper/PE/compositing stay torch). Measured: **1.83× end-to-end / ~2.4× GPU render, SSIM 1.0000 vs torch (identical lips — blocking gate), 12fps no-freeze under full-stack contention.** Blackwell `sm_120` confirmed (`tensorrt-cu12` via `--extra-index-url https://pypi.nvidia.com` + `onnx`; torch 2.11's default exporter lacks `onnxscript` → legacy TorchScript exporter is used). Engines are a **gitignored ~1.75GB prebuilt artifact** (`trt_cache/`, ~7min build via `trt_build.py`). **VRAM: ~+0.5GB** (torch fallback stays resident + engines) — win is latency/headroom, NOT footprint. **Follow-ups:** free the torch UNet/VAE after engines load (→ TRT becomes smaller too); GPU-composite (the ~10ms/frame CPU/PIL blend is now the larger render share); **to use the headroom, `MUSETALK_TRT=1` + raise `MUSETALK_FPS` (16/20 now affordable).** Modules: `local_services/musetalk_server/trt_{export,build,runtime}.py`; quality gate `scripts/_trt_quality_check.py`.
 
 ## ⭐ Session 2026-06-30 (later): local OFFLINE STT added (sherpa streaming + funasr segmented)
 
