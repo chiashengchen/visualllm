@@ -19,6 +19,7 @@ def build_stt(cfg: Config):
         return SherpaStreamingSTTService(
             model_dir=cfg.sherpa_model_dir,
             to_traditional=cfg.sherpa_traditional,
+            endpoint_silence=cfg.sherpa_endpoint_silence,
         )
 
     if cfg.stt_provider == "funasr":

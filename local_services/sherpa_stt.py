@@ -42,7 +42,7 @@ def _find(model_dir: str, *names: str) -> str:
 
 class SherpaStreamingSTTService(STTService):
     def __init__(self, *, model_dir: str, to_traditional: bool = True,
-                 sample_rate: int | None = None, **kwargs):
+                 endpoint_silence: float = 0.5, sample_rate: int | None = None, **kwargs):
         super().__init__(sample_rate=sample_rate, **kwargs)
         import sherpa_onnx
 
@@ -55,9 +55,12 @@ class SherpaStreamingSTTService(STTService):
             num_threads=2,
             decoding_method="greedy_search",
             enable_endpoint_detection=True,
-            rule1_min_trailing_silence=2.4,   # end turn after 2.4s silence even mid-word
-            rule2_min_trailing_silence=0.8,   # end turn after 0.8s silence following speech
-            rule3_min_utterance_length=300,   # cap runaway utterances (frames)
+            # rule2 = trailing silence (s) after speech that FIRES the query. The "fire easier"
+            # knob (SHERPA_ENDPOINT_SILENCE). rule1 (no speech yet) tracks it so a brief utterance
+            # still fires promptly; rule3 caps runaway length.
+            rule1_min_trailing_silence=max(endpoint_silence, 1.2),
+            rule2_min_trailing_silence=endpoint_silence,
+            rule3_min_utterance_length=300,
         )
         self._stream = self._rec.create_stream()
         self._speaking = False

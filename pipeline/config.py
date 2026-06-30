@@ -74,6 +74,9 @@ class Config:
         "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
     ) or "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
     sherpa_traditional: bool = (_get("SHERPA_TRADITIONAL", "1") or "1").lower() in ("1", "true", "yes", "on")
+    # How long a pause (seconds) ends your turn and FIRES the query to the LLM. Lower = snappier
+    # (fires sooner after you stop), but too low can cut you off mid-sentence. Default 0.5.
+    sherpa_endpoint_silence: float = _get_float("SHERPA_ENDPOINT_SILENCE", "0.5")
 
     # --- LLM (OpenRouter: one key, any model via OPENROUTER_MODEL) ---
     openrouter_api_key: str | None = _get("OPENROUTER_API_KEY")
