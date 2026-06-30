@@ -181,8 +181,10 @@ Then in `.env`: `STT_PROVIDER=funasr` (and `LANGUAGE=zh`). `scripts/run.ps1` aut
 the server on **:8004** when `STT_PROVIDER=funasr`.
 
 > **Tradeoff (state it honestly):** fully offline + ~0 VRAM, but **segmented** (no interim
-> partials) and **+~0.3–1.5s** to first transcript on CPU vs Deepgram's streaming, and
-> zh-TW accuracy below nova-2. Deepgram stays the default; this is opt-in.
+> partials, so it transcribes only after you stop speaking) vs Deepgram's streaming, and
+> zh-TW accuracy below nova-2. Measured transcribe cost on this CPU was **~0.15s for a 4.5s
+> utterance** (faster than expected; scales with audio length + CPU load). Deepgram stays the
+> default; this is opt-in.
 
 ---
 
