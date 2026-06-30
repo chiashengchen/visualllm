@@ -13,12 +13,18 @@ from typing import AsyncGenerator
 import aiohttp
 from loguru import logger
 from pipecat.frames.frames import Frame, TranscriptionFrame
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.utils.time import time_now_iso8601
 
 
 class FunasrSTTService(SegmentedSTTService):
     def __init__(self, *, base_url: str, **kwargs):
+        # The server picks model + auto-detects language; we declare them so Pipecat's
+        # STTSettings.validate_complete doesn't log a (harmless) NOT_GIVEN error.
+        kwargs.setdefault(
+            "settings", STTSettings(model="SenseVoiceSmall", language=None, extra={})
+        )
         super().__init__(**kwargs)
         self._base_url = base_url.rstrip("/")
         self._session: aiohttp.ClientSession | None = None
