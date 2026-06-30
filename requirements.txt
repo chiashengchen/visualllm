@@ -6,7 +6,7 @@
 # you actually install and verify with:
 #     python -c "import pipecat; print(pipecat.__version__)"
 # The extras below pull in the provider SDKs used by the Phase 1 prototype.
-pipecat-ai[silero,deepgram,azure,cartesia,openai,elevenlabs,simli,webrtc]>=0.0.70
+pipecat-ai[silero,deepgram,openai,elevenlabs,webrtc]==1.3.0
 
 # Local WebRTC transport + dev client (serves the browser client for local dev).
 # The runner mounts pipecat_ai_prebuilt.frontend, so this is the package needed.
@@ -21,6 +21,11 @@ loguru>=0.7.2
 # zh output to Traditional (zh-TW). Download the model under models/ (see INSTALL.md).
 sherpa-onnx>=1.10
 opencc-python-reimplemented
+
+# --- Direct deps used by local service modules (transitive via pipecat but pinned here) ---
+aiohttp           # cosyvoice_tts.py HTTP streaming client
+numpy             # musetalk_video.py audio/frame processing
+websockets        # musetalk_video.py WebSocket to avatar server
 
 # --- Phase 2/3 local models (install when you reach those phases) ----------
 # Uncomment as needed; these are heavy and GPU-specific.
