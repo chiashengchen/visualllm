@@ -20,7 +20,7 @@ A/V-sync architecture decision (read it before touching sync).**
 | Stage | Service | Where |
 |-------|---------|-------|
 | VAD | Silero (local) | pipeline |
-| STT | Deepgram nova-2 (`en-US`/`zh-TW`/`th` by `LANGUAGE`) | cloud |
+| STT | Deepgram nova-2 (`en-US`/`zh-TW`/`th` by `LANGUAGE`) default; or local OFFLINE: `sherpa` (streaming, in-process, recommended) / `funasr` (segmented, `:8004`) | cloud / **local CPU** |
 | LLM | `LLM_PROVIDER=openrouter` — OpenAI-compatible, so **cloud OR local Ollama** by `OPENROUTER_BASE_URL` (any model via `OPENROUTER_MODEL`); or `weather_chain` (Chinese weather bot) | cloud / local / remote |
 | TTS | **CosyVoice2-0.5B** local streaming (default, on vLLM in WSL, TTFB ~1.1s), or **MOSS-TTS-Realtime** (`TTS_PROVIDER=moss`, `:8003`) | **`:8001` cosy / `:8003` moss, both WSL** |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | **`:8002`, `musetalk` conda env** |
@@ -59,10 +59,19 @@ are **deliberate fallback switches, not multi-provider branching**:
 - `TTS_PROVIDER` = `cosyvoice` (default) | `moss` (local MOSS-TTS-Realtime, `:8003`) | `elevenlabs` | `deepgram`.
 - `LLM_PROVIDER` = `openrouter` (default; point `OPENROUTER_BASE_URL` at `https://openrouter.ai/api/v1` for
   cloud or `http://localhost:11434/v1` for a local Ollama model) | `weather_chain` (NCU zh weather bot).
-- `STT_PROVIDER` = `deepgram` (default, cloud streaming) | `funasr` (local OFFLINE SenseVoice-Small server,
-  `:8004`, `funasr-stt` conda env, **CPU/~0 VRAM** — runs before the avatar render so no GPU contention;
-  returns zh-TW via server-side OpenCC. Segmented, +~0.3-1.5s vs Deepgram. `run.ps1` auto-starts `:8004`
-  when set). `local_services/funasr_server/app.py` (server) + `local_services/funasr_stt.py` (Pipecat wrapper).
+- `STT_PROVIDER` = `deepgram` (default, cloud streaming) | `sherpa` (**recommended local**) | `funasr`.
+  - **`sherpa`** = local OFFLINE **STREAMING** STT, **in-process** in the pipeline (system Python, no server),
+    sherpa-onnx zipformer **bilingual zh-en**, **CPU/~0 VRAM**. It **drives turn-taking from its own ASR
+    endpoint detector** (emits `VADUserStarted/StoppedSpeakingFrame`), so the user turn flushes to the LLM
+    even when the energy-VAD never fires — the failure mode that broke the segmented path on this box's
+    (remote/RDP) mic audio. zh output → Traditional via OpenCC. Model under `models/` (gitignored). Knob
+    `SHERPA_ENDPOINT_SILENCE` (default 0.5s) = pause after you stop that fires the query (lower = snappier).
+    `local_services/sherpa_stt.py`.
+  - **`funasr`** = local OFFLINE **SEGMENTED** SenseVoice-Small server (`:8004`, `funasr-stt` conda env,
+    CPU/~0 VRAM, zh-TW via server-side OpenCC; `run.ps1` auto-starts `:8004` when set).
+    **Caveat:** segmented STT needs Pipecat's energy-VAD to fire `VADUserStoppedSpeakingFrame`; if the mic
+    audio is too quiet for the VAD (seen on the remote/RDP mic), the turn never flushes — prefer `sherpa`.
+    `local_services/funasr_server/app.py` + `local_services/funasr_stt.py`.
 
 **The web config panel (`local_services/config_panel/`, `:7870`) is the easy way to change all of this**
 — it edits `.env` in place (preserving comments) and restarts the pipeline. Run it with the system

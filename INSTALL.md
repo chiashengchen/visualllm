@@ -161,30 +161,55 @@ server's module docstring. Run it **eager** (the default) to avoid recompile sta
 
 ---
 
-## 6.5 (Optional) Offline STT — SenseVoice on CPU
+## 6.5 (Optional) Offline STT — fully local, CPU, ~0 VRAM
 
-By default STT is **Deepgram** (cloud). For a **fully-offline** stack, swap to a local
-**SenseVoice-Small** server (`local_services/funasr_server/app.py`, FunAudioLLM family,
-same as CosyVoice) — it runs on **CPU (system RAM), ~0 VRAM**, so it doesn't compete for
-the shared GPU. It returns **Traditional (zh-TW)** text via OpenCC.
+By default STT is **Deepgram** (cloud). For a **fully-offline** stack there are two local
+options, both CPU / ~0 VRAM so they don't compete for the shared GPU. **`sherpa` is
+recommended.**
+
+### Option A — `sherpa` (streaming, in-process — RECOMMENDED)
+
+sherpa-onnx streaming zipformer, **bilingual zh-en**, runs **in-process** in the pipeline
+(system Python, **no separate server**). It drives turn-taking from its **own ASR endpoint
+detector**, so the user turn reaches the LLM even when Pipecat's energy-VAD doesn't fire on a
+quiet/remote mic (the failure mode that breaks segmented STT). zh output → Traditional (zh-TW)
+via OpenCC.
 
 ```bash
-# one-time: a `funasr-stt` conda env (Python 3.10/3.11) + its deps
-conda create -y -n funasr-stt python=3.11
-conda activate funasr-stt
+# deps go in the SYSTEM python (the pipeline env), already in requirements.txt:
+pip install sherpa-onnx opencc-python-reimplemented
+
+# download the model (~330MB) into models/ (gitignored):
+curl -L -o models/m.tar.bz2 \
+  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2
+cd models && tar xjf m.tar.bz2 && cd ..
+```
+
+Then in `.env`: `STT_PROVIDER=sherpa`. Knobs: `SHERPA_MODEL_DIR`, `SHERPA_TRADITIONAL=1`
+(zh→Traditional), **`SHERPA_ENDPOINT_SILENCE=0.5`** (pause in seconds after you stop that fires
+the query — lower = snappier, too low cuts you off). Works for both Mandarin and English (the
+model is bilingual); set `LANGUAGE` for the LLM/TTS reply language.
+
+> Measured: model loads ~1s; transcribe RTF ~0.03 on CPU (0.35s for 10s audio). True streaming
+> (interim partials). Accuracy on synthesized test audio was rough; real speech transcribes better.
+
+### Option B — `funasr` (segmented SenseVoice server)
+
+SenseVoice-Small (FunAudioLLM family, same as CosyVoice) in a small FastAPI server.
+
+```bash
+conda create -y -n funasr-stt python=3.11 && conda activate funasr-stt
 pip install -r local_services/funasr_server/requirements.txt
-# the model (~1GB) auto-downloads on first run; if the conda cert store blocks it,
+# model (~1GB) auto-downloads on first run; if the conda cert store blocks it,
 # set SSL_CERT_FILE to certifi's cacert.pem (same gotcha as MuseTalk/CosyVoice).
 ```
 
-Then in `.env`: `STT_PROVIDER=funasr` (and `LANGUAGE=zh`). `scripts/run.ps1` auto-starts
-the server on **:8004** when `STT_PROVIDER=funasr`.
+Then in `.env`: `STT_PROVIDER=funasr`. `scripts/run.ps1` auto-starts the server on **:8004**.
 
-> **Tradeoff (state it honestly):** fully offline + ~0 VRAM, but **segmented** (no interim
-> partials, so it transcribes only after you stop speaking) vs Deepgram's streaming, and
-> zh-TW accuracy below nova-2. Measured transcribe cost on this CPU was **~0.15s for a 4.5s
-> utterance** (faster than expected; scales with audio length + CPU load). Deepgram stays the
-> default; this is opt-in.
+> **Caveat:** SenseVoice is **segmented** — it only transcribes when Pipecat's energy-VAD fires
+> end-of-turn. On a too-quiet mic the VAD never fires and the turn never reaches the LLM (seen on
+> the remote/RDP mic here). If you hit that, use Option A (`sherpa`), which doesn't depend on the
+> energy-VAD. Measured transcribe ~0.15s for a 4.5s utterance on CPU. Deepgram stays the default.
 
 ---
 

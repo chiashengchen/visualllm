@@ -194,7 +194,7 @@ change** to switch model, vendor, or language. This is what makes the
 
 | Stage | Options available today |
 |-------|-------------------------|
-| STT | `deepgram` · `azure` · `whisper_local` · `funasr` (zh) |
+| STT | `deepgram` (default) · `sherpa` (local streaming, zh-en, CPU) · `funasr` (local segmented SenseVoice, zh) |
 | LLM | `openai` · `anthropic` · `openrouter` · `qwen_local` |
 | TTS | `elevenlabs` · `cartesia` · `azure` · `cosyvoice_local` · `kokoro_local` |
 | Avatar | `simli` (cloud) · `musetalk_local` · `heygen` |

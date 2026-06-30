@@ -74,17 +74,26 @@ only by `.env` (no provider-selection branching — see `CLAUDE.md`).
 `pipeline/stages/vad.py` (`build_vad_params`). Runs on the input audio to detect when you
 **stop** speaking, which ends the user turn and kicks STT's final transcript.
 
-### STT — Deepgram nova-2 (default) / FunASR SenseVoice (local offline)
+### STT — Deepgram (default) / sherpa-onnx streaming (local) / FunASR SenseVoice (local)
 `pipeline/stages/stt.py` switches on `STT_PROVIDER`:
 - **`deepgram`** (default): streams your mic audio to Deepgram over a websocket; emits
   interim + final transcripts. Language follows `LANGUAGE` (`en-US` / `zh-TW` / `th`). Needs
   `DEEPGRAM_API_KEY`.
-- **`funasr`** (local OFFLINE): a SenseVoice-Small server (`local_services/funasr_server/app.py`,
+- **`sherpa`** (local OFFLINE STREAMING — **recommended local option**): sherpa-onnx zipformer
+  **bilingual zh-en**, run **in-process** in the pipeline (system Python, **no server**), on **CPU
+  (~0 VRAM)**. `local_services/sherpa_stt.py`. It **drives turn-taking from its own ASR endpoint
+  detector** — it emits `VADUserStarted/StoppedSpeakingFrame` itself, so the user turn flushes to the
+  LLM **even when the energy-VAD never fires** (the failure mode that broke segmented STT on this box's
+  remote/RDP mic, where ~700 audio frames reached STT but 0 VAD frames did). zh output → Traditional
+  via OpenCC. Knobs: `SHERPA_MODEL_DIR`, `SHERPA_TRADITIONAL`, **`SHERPA_ENDPOINT_SILENCE`** (default
+  0.5s = pause after you stop that fires the query; lower = snappier, too low cuts you off). Model is
+  downloaded under `models/` (gitignored — see INSTALL.md).
+- **`funasr`** (local OFFLINE SEGMENTED): a SenseVoice-Small server (`local_services/funasr_server/app.py`,
   `funasr-stt` conda env, `:8004`) on **CPU (~0 VRAM)**. The Pipecat wrapper
   (`local_services/funasr_stt.py`) buffers the utterance, POSTs the PCM, and emits the
-  **Traditional zh-TW** text the server returns (server-side OpenCC `s2twp`). Segmented (no
-  interim partials), +~0.3-1.5s on CPU. Knobs: `FUNASR_URL`, `FUNASR_MODEL`, `FUNASR_DEVICE`.
-  `run.ps1` auto-starts `:8004` when `STT_PROVIDER=funasr`.
+  **Traditional zh-TW** text the server returns (server-side OpenCC `s2twp`). **Caveat:** segmented
+  STT needs the energy-VAD to fire end-of-turn; on a too-quiet mic the turn never flushes — prefer
+  `sherpa`. Knobs: `FUNASR_URL`, `FUNASR_MODEL`, `FUNASR_DEVICE`. `run.ps1` auto-starts `:8004` when set.
 
 ### LLM — OpenRouter (cloud or local Ollama) / weather_chain
 `pipeline/stages/llm.py`. `LLM_PROVIDER=openrouter` builds an OpenAI-compatible client, so it points at

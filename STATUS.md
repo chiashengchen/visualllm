@@ -1,6 +1,6 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-30 (**LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan — fixes the CPU-contention regression. Investigated a **Chinese-only voice-delay**: root cause is CosyVoice's zh first-chunk TTFB (~2.3s vs en ~1.1s), NOT the LLM/avatar — but the fix conflicts with the avatar on the shared GPU, so it's left UNRESOLVED, see the 2026-06-30 session below + P15. Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
+_Last updated: 2026-06-30 (**Added local OFFLINE STT** — `STT_PROVIDER=sherpa` (sherpa-onnx streaming, in-process, CPU/~0 VRAM, recommended) + `funasr` (SenseVoice segmented, `:8004`); default stays Deepgram. On branch `feat/offline-stt-sensevoice`, not pushed. See the session note below. Earlier: **LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan — fixes the CPU-contention regression. Investigated a **Chinese-only voice-delay**: root cause is CosyVoice's zh first-chunk TTFB (~2.3s vs en ~1.1s), NOT the LLM/avatar — but the fix conflicts with the avatar on the shared GPU, so it's left UNRESOLVED, see the 2026-06-30 session below + P15. Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the processes, the turn
 > flow, the avatar wire contract, running locally + remote, config reference).
@@ -11,7 +11,7 @@ _Last updated: 2026-06-30 (**LLM reverted to cloud (gemini-2.5-flash-lite)** per
 | Stage | Service | Where |
 |-------|---------|-------|
 | VAD | Silero (local) | pipeline |
-| STT | Deepgram nova-2 (`en`/`zh`/`th` by `LANGUAGE`) | cloud |
+| STT | Deepgram nova-2 (`en`/`zh`/`th` by `LANGUAGE`) default; local OFFLINE alt `STT_PROVIDER=sherpa` (streaming, in-process) or `funasr` (segmented, `:8004`) | cloud / **local CPU** |
 | LLM | `LLM_PROVIDER=openrouter` (OpenAI-compatible — **cloud OR local Ollama** by `OPENROUTER_BASE_URL`) or `weather_chain` (Chinese weather bot) | cloud / local / remote chain |
 | TTS | **CosyVoice2-0.5B** local streaming (default), or **MOSS-TTS-Realtime** (`TTS_PROVIDER=moss`) | `:8001` cosy (WSL) / `:8003` moss (WSL) |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | `:8002`, `musetalk` conda env |
@@ -22,6 +22,27 @@ WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-outpu
 TTS providers (`cosyvoice` default · `moss` · `elevenlabs` · `deepgram`) and LLM providers
 (`openrouter` · `weather_chain`) are deliberate **single-provider switches** via `.env`, not
 multi-provider branching. **Easiest way to change any of this: the config panel (`:7870`).**
+
+## ⭐ Session 2026-06-30 (later): local OFFLINE STT added (sherpa streaming + funasr segmented)
+
+Branch `feat/offline-stt-sensevoice` (off `main`, **not pushed**). Goal: replace cloud Deepgram with a
+fully-local STT. Two options added behind `STT_PROVIDER` (default stays `deepgram`):
+
+- **`sherpa` (recommended)** — sherpa-onnx streaming zipformer, **bilingual zh-en**, **in-process** (system
+  Python, no server), **CPU/~0 VRAM**. zh→Traditional via OpenCC. `local_services/sherpa_stt.py`. Model under
+  `models/` (gitignored). Knob `SHERPA_ENDPOINT_SILENCE` (0.5s default) = pause that fires the query.
+- **`funasr`** — SenseVoice-Small segmented server (`:8004`, `funasr-stt` conda env). `local_services/funasr_server/`.
+
+**Root cause that drove the design (live-debugged, don't re-derive):** on this box's **remote/RDP mic**, audio
+reaches the STT (~700 frames) but Pipecat's **energy-VAD never fires `VADUserStoppedSpeakingFrame`**, so the
+`LLMUserAggregator` never flushes the user turn → no LLM response. Deepgram survived only because it's
+streaming + self-endpointing; **segmented SenseVoice depends on that VAD, so it was fatal.** Fix: **sherpa
+streaming drives turn-taking from its own ASR endpoint** (emits the VAD start/stop frames itself), so the turn
+flushes regardless of the energy-VAD. **Verified end-to-end via the WebRTC probe** (synthetic mic → sherpa →
+LLM answered a weather question → CosyVoice spoke it). **Still OPEN:** the user's **real-mic** confirmation,
+and `[TTFO]` meter reads `count:0` with ASR-driven turns (turn works; meter wiring to revisit). Box has **no
+physical mic** (RDP "Remote Audio" only) — needs RDP mic redirection for an on-box test. Specs/plan:
+`docs/superpowers/{specs,plans}/2026-06-30-local-offline-stt*`. Full reference: `INSTALL.md` §6.5, `WORKFLOW.md`.
 
 ## ⭐ Session 2026-06-30: LLM reverted to cloud; Chinese voice-delay diagnosed (shared-GPU conflict)
 

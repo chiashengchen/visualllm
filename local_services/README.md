@@ -1,44 +1,39 @@
 # local_services
 
-Local models running on the 5060 Ti, for Phase 2/3. Two layers:
+Local model integrations for the speech→avatar pipeline. Two layers: thin **Pipecat
+client wrappers** (selected by `.env`, used from `pipeline/stages/*.py`) and the heavier
+**model servers/engines** they talk to. The single shared GPU is ~16 GB (see
+`../docs/gpu-memory-notes.md`).
 
-**Pipecat client wrappers** (drop into the pipeline via `pipeline/stages/*.py`):
+## Pipecat client wrappers
 
-| Module | Class | Stage | Phase |
-|--------|-------|-------|-------|
-| `funasr_stt.py` | `FunASRSTTService` | Mandarin STT (in-process, Paraformer) | 2 |
-| `cosyvoice_tts.py` | `CosyVoiceTTSService` | zh-TW streaming TTS (HTTP client) | 2/3 |
-| `musetalk_video.py` | `MuseTalkVideoService` | local lip-sync avatar (websocket client) | 3 |
+| Module | Class | Stage | Runs |
+|--------|-------|-------|------|
+| `sherpa_stt.py` | `SherpaStreamingSTTService` | **STT** — local OFFLINE **streaming** (sherpa-onnx zipformer, bilingual zh-en); drives turn-taking from its own ASR endpoint | **in-process**, CPU/~0 VRAM |
+| `funasr_stt.py` | `FunasrSTTService` | **STT** — local OFFLINE **segmented** (SenseVoice-Small); needs the energy-VAD to fire end-of-turn | HTTP client → `funasr_server` `:8004` |
+| `cosyvoice_tts.py` | `CosyVoiceTTSService` | **TTS** — CosyVoice2 (also reused for MOSS via `MOSS_URL`) | HTTP client → `:8001` (or `:8003`) |
+| `musetalk_video.py` | `MuseTalkVideoService` | **Avatar** — mouth-region lip-sync | websocket client → `:8002` |
+| `avatar_memory.py` / `weather_chain_llm.py` | — | optional avatar memory / NCU weather-bot LLM | — |
 
-**Model servers** (the heavy processes the clients talk to):
+## Model servers / engines
 
-| Folder | Port | Talks to | VRAM |
-|--------|------|----------|------|
-| `cosyvoice_server/` | 8001 | `CosyVoiceTTSService` | ~2 GB |
-| `musetalk_server/`  | 8002 | `MuseTalkVideoService` | ~4–6 GB |
+| Folder | Port | Env | Talks to | Notes |
+|--------|------|-----|----------|-------|
+| `cosyvoice_server/` *(vendored at repo `../tts/cosyvoice-server/`)* | 8001 | `cosyvllm` (WSL) / `tts` (Win) | `CosyVoiceTTSService` | default TTS; vLLM in WSL, TTFB ~1.1s |
+| `musetalk_server/` | 8002 | `musetalk` conda | `MuseTalkVideoService` | lip-sync avatar; ~4–6 GB |
+| `moss_server/` | 8003 | `moss-tts` conda | `CosyVoiceTTSService` (`MOSS_URL`) | alt TTS (`TTS_PROVIDER=moss`) |
+| `funasr_server/` | 8004 | `funasr-stt` conda | `FunasrSTTService` | SenseVoice; CPU/~0 VRAM; `run.ps1` auto-starts when `STT_PROVIDER=funasr` |
 
-FunASR runs in-process (no server); the first call downloads its weights.
+`sherpa_stt.py` needs **no server** — sherpa-onnx + opencc run in the pipeline's system Python
+(deps in `../requirements.txt`); the model lives under `../models/` (gitignored).
 
-## Wiring them in (`.env`)
+## Wiring (`.env`)
 
 ```
-STT_PROVIDER=funasr
-TTS_PROVIDER=cosyvoice_local      # start: python -m local_services.cosyvoice_server.app
-AVATAR_PROVIDER=musetalk_local    # start: python -m local_services.musetalk_server.app
+STT_PROVIDER=deepgram      # deepgram (cloud, default) | sherpa (local streaming) | funasr (local segmented)
+TTS_PROVIDER=cosyvoice     # cosyvoice (default) | moss | elevenlabs | deepgram
+# avatar is always MuseTalk; knobs MUSETALK_* (see ../WORKFLOW.md §8)
 ```
 
-## Status / what's left
-
-- `funasr_stt.py`, `cosyvoice_tts.py`, `musetalk_video.py` — **complete** client logic.
-- `cosyvoice_server/app.py` — **near-complete**; needs CosyVoice installed +
-  the `CosyVoice2-0.5B` checkpoint (see its `requirements.txt`).
-- `musetalk_server/app.py` — websocket protocol + audio-windowing **complete**;
-  the two model calls (`MuseTalkEngine.load` / `.render`) are marked `TODO[MuseTalk]`
-  and map onto MuseTalk's `realtime_inference`. Until weights are wired it emits
-  neutral gray frames so the transport + A/V-sync path can be tested end-to-end.
-
-## VRAM reality (16 GB)
-
-Don't run everything local at once: MuseTalk (~5) + CosyVoice2 (~2) + FunASR
-(~2) + Qwen-7B-4bit (~6) ≈ 15 GB with no headroom. Keep **either the LLM or the
-avatar on API** in steady state (decide in Phase 3 from measured numbers).
+Full setup for each local option: **`../INSTALL.md`** (STT §6.5). Provider behavior + the
+streaming-vs-segmented / VAD detail: **`../WORKFLOW.md`** and **`../CLAUDE.md`**.

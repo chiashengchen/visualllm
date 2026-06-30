@@ -62,5 +62,6 @@ Combined, these can claw back ~0.5–1.5GB — but both interact with the load-o
 - **Moving the TTS/avatar to RAM** (CPU-offload / `--cpu-offload-gb` / managed memory): real-time GPU
   inference needs weights/activations in VRAM; offload pages over PCIe every step and destroys the
   latency the system was tuned for. Not viable.
-- **A GPU STT model:** the card has no headroom. STT runs on **CPU** instead — see
-  `STT_PROVIDER=funasr` (SenseVoice on CPU, ~0 VRAM), which sidesteps this entirely.
+- **A GPU STT model:** the card has no headroom. STT runs on **CPU** instead — `STT_PROVIDER=sherpa`
+  (sherpa-onnx streaming, in-process, ~0 VRAM — recommended) or `funasr` (SenseVoice server), which
+  sidestep this entirely.
