@@ -21,9 +21,10 @@ A/V-sync architecture decision (read it before touching sync).**
 |-------|---------|-------|
 | VAD | Silero (local) | pipeline |
 | STT | Deepgram nova-2 (`en-US`/`zh-TW`/`th` by `LANGUAGE`) | cloud |
-| LLM | OpenRouter (any model via `OPENROUTER_MODEL`) | cloud |
-| TTS | **CosyVoice2-0.5B** local streaming server (female zero-shot voice), **on vLLM in WSL** (TTFB ~1.1s; the Windows `tts`-env PyTorch server is the fallback) | **`:8001`, separate repo `E:\Claude\cosyvoice-local-tts`** |
+| LLM | `LLM_PROVIDER=openrouter` — OpenAI-compatible, so **cloud OR local Ollama** by `OPENROUTER_BASE_URL` (any model via `OPENROUTER_MODEL`); or `weather_chain` (Chinese weather bot) | cloud / local / remote |
+| TTS | **CosyVoice2-0.5B** local streaming (default, on vLLM in WSL, TTFB ~1.1s), or **MOSS-TTS-Realtime** (`TTS_PROVIDER=moss`, `:8003`) | **`:8001` cosy / `:8003` moss, both WSL** |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | **`:8002`, `musetalk` conda env** |
+| Config | **Web config panel** — edit `.env` + restart the pipeline from a browser | **`:7870` (`:8444` over Tailscale)** |
 
 **TTS note:** CosyVoice runs its autoregressive LLM on **vLLM inside WSL Ubuntu**
 (`cosyvllm` conda env on the Blackwell 5060 Ti) — this cut first-chunk latency ~3.4s→~1.1s, the root
@@ -39,11 +40,34 @@ the cosyvoice repo) must exceed vLLM's own ~4GB footprint or load crashes with "
 for the cache blocks" (the old hardcoded `0.2` = 3.26GB was too low). If the avatar shows but the bot
 is silent, first check `:8001` is actually up — the pipeline log shows "Cannot connect to host …:8001".
 Free VRAM (close a heavy GPU app) or nudge the util fraction; the "Available KV cache memory" log line
-must be positive.
+must be positive. **LOAD ORDER MATTERS: start CosyVoice (vLLM) BEFORE MuseTalk.** At `gpu_util 0.3` vLLM
+needs the card mostly free; if you restart cosyvoice *while MuseTalk already holds ~5GB*, vLLM crashes
+"No available memory for the cache blocks" (and raising util then trips "Free memory … less than desired").
+Clean recovery = stop all three → start cosyvoice on the near-empty card (`run_vllm_server.sh`) → then
+`scripts/run.ps1` (MuseTalk + pipeline). The launcher already does this order. (`docs/PROBLEMS-AND-FIXES.md` P15.)
+
+**Chinese voice starts ~1s later than English — known, unfixable on one GPU (`docs/PROBLEMS-AND-FIXES.md` P15).**
+CosyVoice's zh first-chunk TTFB is ~2.3s vs en ~1.1s (it emits a bigger opening stream chunk for zh). The
+`COSYVOICE_FIRST_HOP` knob cuts it but its extra GPU work starves the avatar render (lips ~2s→~8s) — do NOT
+enable it. Fast zh TTS and a smooth avatar conflict on the shared GPU; the real fix is a dedicated avatar GPU.
 
 Each stage is a thin single-provider factory in `pipeline/stages/` chosen by `.env` — these
 are **deliberate fallback switches, not multi-provider branching**:
-- `TTS_PROVIDER` = `cosyvoice` (default) | `elevenlabs` | `deepgram` (the last two are cloud fallbacks).
+- `TTS_PROVIDER` = `cosyvoice` (default) | `moss` (local MOSS-TTS-Realtime, `:8003`) | `elevenlabs` | `deepgram`.
+- `LLM_PROVIDER` = `openrouter` (default; point `OPENROUTER_BASE_URL` at `https://openrouter.ai/api/v1` for
+  cloud or `http://localhost:11434/v1` for a local Ollama model) | `weather_chain` (NCU zh weather bot).
+
+**The web config panel (`local_services/config_panel/`, `:7870`) is the easy way to change all of this**
+— it edits `.env` in place (preserving comments) and restarts the pipeline. Run it with the system
+Python: `python -m local_services.config_panel.server`. Its Restart kills `:7860` via a native Win32
+`TerminateProcess` (NOT `taskkill`/PowerShell — those hang for tens of seconds under CPU load here).
+
+**MOSS-TTS-Realtime (`TTS_PROVIDER=moss`):** a streaming server (`local_services/moss_server/app.py`,
+`moss-tts` conda env) speaking the SAME `/tts/stream` raw-PCM contract as CosyVoice, so it reuses the
+CosyVoice client pointed at `MOSS_URL`. The voice is a fixed reference clip (`MOSS_REF`, clone-only).
+**Run it eager** (`TORCHDYNAMO_DISABLE=1`, the default) — compiled mode recompiles ~3–40s on each new
+sentence-length, felt as between-sentence stalls. Launch recipe (incl. the `CC`/triton + `torchcodec`
+ffmpeg-7/`nvidia-npp`/`LD_LIBRARY_PATH` fixes) is in the server's module docstring.
 
 Core `.env` knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECONDS`, `TTS_PROVIDER`,
 `MUSETALK_SYNC_MODE` (**`steady`** = video-master, synced start, the user's pick and current
@@ -55,11 +79,19 @@ tradeoff: under a long render stall the voice briefly **pauses** then resumes cl
 `live` if that pause is worse than the lip trail), `MUSETALK_FPS` (**12** now; **keep it a divisor
 of 16000** — 8/10/16/20/25 — so frame count = audio length. The server's `samples_for_frames` ceil
 sizing makes 12 correct anyway; the old `int(16000/fps)` truncation lost ~1 frame/segment → lips
-finished ~1–2s early, `docs/PROBLEMS-AND-FIXES.md` P9. NOTE: a leftover-audio blip ~1–2s *after* the
-turn is a separate **known/unfixed** issue, P10 — fix reverted by preference),
+finished ~1–2s early, `docs/PROBLEMS-AND-FIXES.md` P9. NOTE: the end-of-turn leftover-audio blip
+(P10) is **FIXED** — `int()`→`math.ceil` on the `audio_cap` in `musetalk_video.py::_advance` so the
+final audio sub-frame releases in step instead of waiting for the delayed `video_end` drain),
 `MUSETALK_FEED_BURST_S` (1.0 — bursts the first 1s of a turn's audio un-paced so the renderer
-isn't starved at turn start; cut lip-start lag ~1.9s→~0.8s), `MUSETALK_END_TAIL_FRAMES` (ease-out
-neutral frames after speech), `MUSETALK_SIZE` (512 — shrinking it does NOT cut MuseTalk compute),
+isn't starved at turn start; cut lip-start lag ~1.9s→~0.8s), `MUSETALK_END_TAIL_FRAMES` (**0** now —
+the client close-crossfade replaces the neutral tail; `>0` = static neutral frames after speech, the
+old clean snap), `MUSETALK_CLOSE_FADE_FRAMES` (**5** — eases the mouth shut at end of turn: the client
+cross-dissolves the last spoken frame→rest pose over N frames, delivered **free-run/untagged** ("live
+during the close") so it survives steady's non-live transport without the audio-cap stranding it; `0`
+= clean snap; needs `END_TAIL=0`; `docs/PROBLEMS-AND-FIXES.md` P12), `MUSETALK_IDLE_MOTION` (**0** = no breathing idle; the face
+holds the static neutral portrait between turns — the user's pick. `1` = the synthesized breathing
+loop. Server reads it from the OS env, so `run.ps1` propagates it), `MUSETALK_SIZE` (512 — shrinking
+it does NOT cut MuseTalk compute),
 `MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
 the shared GPU), `CLIENT_JITTER_BUFFER_MS` (raise only for a remote/WAN viewer),
@@ -71,6 +103,14 @@ intermittent remote mic — `0` disables). **Full reference: `WORKFLOW.md` §8.*
 
 There is **no build/lint/unit-test suite** — don't invent one. The real commands (3 processes;
 `scripts/run.ps1` starts the avatar server + pipeline and propagates the MuseTalk env from `.env`):
+
+**One-click full stack (easiest):** double-click **`Run VisualLLm.exe`** in the repo root. It runs
+`scripts/launch.ps1`, which brings up the WSL CosyVoice TTS (waits on `/health`), then `run.ps1`
+(avatar + pipeline), then the config panel, then opens `/client/`. The launcher window is the
+on/off switch — press Enter (or close it) to stop everything. The `.exe` is a tiny C# shim compiled
+from `scripts/Launcher.cs` by the bundled `csc.exe`; rebuild it with `.\scripts\build-exe.ps1` (only
+needed if you change `Launcher.cs` — editing `launch.ps1` needs no rebuild). The individual commands
+below are still the way to run/debug a single stage.
 
 ```bash
 # 1. CosyVoice TTS server (DEFAULT = vLLM in WSL, TTFB ~1.1s) — its OWN repo E:\Claude\cosyvoice-local-tts
@@ -91,6 +131,13 @@ python -m pipeline.main                                             # http://loc
 # --- or start the avatar server + pipeline together ---
 .\scripts\run.ps1
 
+# 4. (optional) MOSS-TTS-Realtime server -- `moss-tts` conda env, serves :8003 (TTS_PROVIDER=moss).
+#    Needs CC/triton + torchcodec(ffmpeg7)+nvidia-npp+LD_LIBRARY_PATH; full recipe in the docstring:
+#    python -m uvicorn local_services.moss_server.app:app --host 0.0.0.0 --port 8003
+
+# 5. (optional) Web config panel -- SYSTEM python (it restarts the pipeline), serves :7870.
+python -m local_services.config_panel.server               # edit .env + restart from the browser
+
 # Verify every fragile import resolves WITHOUT keys/network (Pipecat drift check):
 python -m scripts.preflight
 
@@ -101,6 +148,8 @@ python -m scripts.measure --offline-capture                        # full turn t
 #   (the two tools below are what measure.py wraps; run them standalone only for one-off debugging)
 python -m scripts._webrtc_probe --mic output/q_ai.wav --lead 8     # drives a turn, records + metrics
 E:\miniconda3\envs\musetalk\python.exe -m local_services.musetalk_server._capture output/q_ai.wav  # offline mp4
+# A/V-SYNCED offline capture (keeps ONLY real video_start..video_end frames, auto-detects frame size):
+E:\miniconda3\envs\musetalk\python.exe scripts\_capture_synced.py output/q_ai.wav
 
 # Remote-link isolation test (streams a rendered mp4 LIVE as MJPEG, no GPU/WebRTC) — isolate link vs render:
 python -m scripts.stream_live
@@ -195,8 +244,8 @@ audio/video drift.
 - Pipecat import paths drift between releases; the fragile ones are isolated to
   `pipeline/stages/*.py`, `pipeline/main.py`, `pipeline/metrics.py`. Run `python -m scripts.preflight`
   after touching them.
-- **The user is on RDP** into this box (and views the live avatar remotely from a notebook in
-  another country via the `tailscale serve` HTTPS URL). RDP adds its own video choppiness AND
+- **Remote viewing** (RDP into this box, or the live avatar over a `tailscale serve` HTTPS URL in a
+  remote browser) has its own pitfalls: RDP adds video choppiness AND
   desyncs audio/video — when judging avatar smoothness/sync, use `_capture.py` (offline, no
   WebRTC/RDP) or a native remote browser, never the RDP window; re-encode any mp4 trims
   (`-ss -c copy` breaks playback). When the avatar "won't show" or "won't talk," first check both

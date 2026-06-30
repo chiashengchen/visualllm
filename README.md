@@ -49,6 +49,9 @@ scripts/
 
 ## Quick start
 
+> **Full from-zero setup** — hardware requirements, both TTS paths (WSL2+vLLM and
+> Windows-only), all conda environments, weights, and `.env`: see **[`INSTALL.md`](INSTALL.md)**.
+
 ```bash
 pip install -r requirements.txt
 python -m scripts.preflight       # verify imports resolve BEFORE wiring keys
@@ -58,7 +61,11 @@ copy .env.example .env            # then fill in keys (Deepgram, OpenRouter)
 The default stack is **3 processes** (TTS server + avatar server + pipeline). See
 **`STATUS.md`** (current state, source of truth), **`WORKFLOW.md`** (full run +
 `.env` reference), and **`docs/PROBLEMS-AND-FIXES.md`** (every bug found + how it was
-fixed — read before re-debugging the avatar/audio). Short version:
+fixed — read before re-debugging the avatar/audio).
+
+**Quickest start:** double-click **`Run VisualLLm.exe`** in the repo root — it starts the WSL TTS,
+the avatar + pipeline, and the config panel, then opens the client. Press Enter in its window to stop
+everything. Manual version:
 
 ```bash
 # 1. CosyVoice TTS — vLLM in WSL (TTFB ~1.1s). Then set COSYVOICE_URL to the WSL IP (`wsl hostname -I`),
@@ -85,6 +92,10 @@ the disconnect log prints the median/p95 summary.
 
 Set `LANGUAGE=zh` in `.env` (and optionally an `OPENROUTER_MODEL` strong at
 Chinese). Deepgram switches to `zh-TW` and CosyVoice speaks zh — no code changes.
+
+> **Known limitation:** the Chinese voice starts ~1s later than English — CosyVoice's
+> zh first-chunk TTFB is ~2.3s vs ~1.1s for en. It's fixable in TTS but the fix starves
+> the shared-GPU avatar render, so it's left as-is. See `docs/PROBLEMS-AND-FIXES.md` P15.
 
 ---
 

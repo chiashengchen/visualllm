@@ -642,6 +642,13 @@ async def stream(ws: WebSocket):
                     elif not sp and idle_n:
                         last = idle[idle_i % idle_n]
                         idle_i += 1
+                    elif not sp:
+                        # No idle loop (MUSETALK_IDLE_MOTION=0): settle to the NEUTRAL rest pose
+                        # between turns. Without this `last` stays on the last drained frame -- which
+                        # with MUSETALK_END_TAIL_FRAMES=0 is the last SPOKEN frame (parted mouth), so
+                        # the face would rest parted AND the client's close crossfade would cache that
+                        # as its target (a no-op). END_TAIL>0 used to hide this by draining a neutral.
+                        last = engine.neutral_frame()
                 # Always emit a frame this tick (real, held-last, or idle) so the video never
                 # freezes -- the end-of-turn freeze was caused by skipping the send on underflow.
                 await ws.send_bytes(last)
@@ -710,10 +717,12 @@ async def stream(ws: WebSocket):
                     speaking.clear()               # let the idle loop resume
                     if kind == "speech_end":
                         logger.info(f"[stream] turn rendered {turn_frames} frames")
-                        # Graceful TAIL: a few closing frames so the avatar eases out (mouth
-                        # settles to neutral) instead of snapping shut the instant audio ends.
+                        # Graceful TAIL: a few neutral frames so the avatar eases out instead of
+                        # snapping shut. Set to 0 when the CLIENT runs the close crossfade
+                        # (MUSETALK_CLOSE_FADE_FRAMES) -- then the last buffered frame must stay the
+                        # last SPOKEN frame, so we must NOT append any neutral tail (allow a true 0).
                         tail = int(os.getenv("MUSETALK_END_TAIL_FRAMES", "4"))
-                        for _ in range(max(1, tail)):
+                        for _ in range(max(0, tail)):
                             enqueue(engine.neutral_frame())
                 continue
 

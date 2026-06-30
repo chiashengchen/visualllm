@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CosyVoice Local TTS — Weather Forecaster Demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="card">
+    <header>
+      <h1>🎙️ Local CosyVoice TTS</h1>
+      <p class="subtitle">AI Weather Forecaster · English &amp; 繁體中文 (zh-TW)</p>
+      <span id="engineBadge" class="badge badge-muted">checking engine…</span>
+    </header>
+
+    <section class="samples">
+      <span class="samples-label">Try a sample:</span>
+      <button class="chip" data-sample="Good morning. Today's weather in Taipei is sunny, with a high of 28 degrees.">EN sample</button>
+      <button class="chip" data-sample="各位觀眾早安，今天台北天氣晴朗，氣溫攝氏二十八度，午後山區有短暫陣雨。">中文範例</button>
+    </section>
+
+    <label for="text" class="field-label">Text to synthesize</label>
+    <textarea id="text" rows="5"
+      placeholder="Enter English or Traditional Chinese text…&#10;輸入英文或繁體中文…"></textarea>
+
+    <div class="controls">
+      <div class="speed">
+        <label for="speed">Speed</label>
+        <input type="range" id="speed" min="0.5" max="1.5" step="0.1" value="1.0" />
+        <span id="speedVal">1.0×</span>
+      </div>
+      <button id="generateBtn" class="primary">
+        <span class="btn-label">Generate Speech</span>
+        <span class="spinner" hidden></span>
+      </button>
+    </div>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <section id="player" class="player" hidden>
+      <audio id="audio" controls></audio>
+      <div class="meta">
+        <span id="meta"></span>
+        <a id="download" class="download" download="tts.wav">⬇ Download WAV</a>
+      </div>
+    </section>
+
+    <footer>
+      <code>POST /tts</code> · served locally by FastAPI on port 8001
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

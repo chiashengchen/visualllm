@@ -25,6 +25,19 @@ def build_tts(cfg: Config):
             sample_rate=cfg.cosyvoice_sample_rate,
         )
 
+    if cfg.tts_provider == "moss":
+        # MOSS-TTS-Realtime local server speaks the SAME /tts/stream raw-PCM contract as
+        # CosyVoice, so we reuse the CosyVoice client pointed at MOSS_URL. The voice is a
+        # fixed professional reference pinned server-side (MOSS_REF), so `voice` is
+        # informational here. Native 24 kHz; Pipecat resamples to 16 kHz for the avatar.
+        from local_services.cosyvoice_tts import CosyVoiceTTSService
+
+        return CosyVoiceTTSService(
+            base_url=cfg.moss_url,
+            voice="pro",
+            sample_rate=cfg.moss_sample_rate,
+        )
+
     if cfg.tts_provider == "deepgram":
         from pipecat.services.deepgram.tts import DeepgramTTSService
 

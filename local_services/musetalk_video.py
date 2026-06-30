@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 
 import numpy as np
@@ -149,6 +150,21 @@ class MuseTalkVideoService(FrameProcessor):
         self._last_offset_log = 0.0                 # throttle for the continuous offset trace
         self._odd_carry = b""                       # anti-screech: dangling odd byte carried between
         #   downstream audio frames so the PCM stays whole-sample (see _align_even)
+
+        # --- smooth end-of-turn close (steady) ---
+        # MuseTalk can't ease the mouth shut itself (silence renders a PARTED mouth, not closed
+        # lips -- measured), so at end of turn we cross-dissolve the last spoken frame -> the rest
+        # pose over K frames. To survive steady's NON-LIVE transport (which drops audio-less
+        # trailing frames) each close frame is paired with one frame of trailing SILENCE and pushed
+        # through the SAME _emit_pair path as every speech frame. Gated by MUSETALK_CLOSE_FADE_FRAMES
+        # (0 = off, the old clean snap). Use with MUSETALK_END_TAIL_FRAMES=0 so the last buffered
+        # frame is the last SPOKEN frame, not a neutral tail copy.
+        self._close_fade = int(os.getenv("MUSETALK_CLOSE_FADE_FRAMES", "0") or "0")
+        self._rest_frame: bytes | None = None   # cached between-turn rest pose (crossfade target)
+        self._tts_sr = MUSETALK_SR              # last turn's TTS sample rate (for the silence pad)
+        self._tts_ch = 1
+        self._suppress_until = 0.0              # drop server idle frames until here so they can't
+        #   preempt the crossfade playout (the burst-flush collapse P12 hit)
 
     # --- connection lifecycle ---------------------------------------------
     async def _connect(self):
@@ -279,6 +295,13 @@ class MuseTalkVideoService(FrameProcessor):
                 await self._advance()   # release paced to frames AS they arrive (continuous)
         else:
             # idle frame (between turns) or fallback: animate immediately, untagged.
+            if not self._video_active:
+                # Cache the rest pose (crossfade target) and, while a close crossfade is playing
+                # out, DROP these server idle frames so they can't preempt it (the burst-flush
+                # collapse P12 hit -- the transport's current image would jump to neutral).
+                self._rest_frame = img
+                if asyncio.get_running_loop().time() < self._suppress_until:
+                    return
             await self.push_frame(
                 OutputImageRawFrame(image=img, size=self._size, format="RGB"),
                 FrameDirection.DOWNSTREAM,
@@ -298,10 +321,20 @@ class MuseTalkVideoService(FrameProcessor):
             if not self._unsynced and self._mode == "steady":
                 await self._advance()   # heartbeat (real pacing is on frame receipt)
         elif kind == "video_end":
+            close_start = self._vbuf[-1] if self._vbuf else None   # last spoken frame (crossfade src)
             await self._advance()       # flush whatever is buffered (prerender: the whole reply)
             await self._drain_audio()   # release the turn's trailing voice
             self._log_turn_timing()
             self._video_active = False
+            if self._close_fade > 0 and close_start is not None and self._rest_frame is not None:
+                # Ease the mouth shut: FREE-RUN the crossfade (untagged, like the idle loop) so it
+                # is NOT gated by the audio-cap in _advance -- that cap strands trailing frames when
+                # the render ran behind (video > audio). Suppress server idle frames during the
+                # playout so they can't preempt it; the fade lands on the rest pose, so the neutral
+                # the server then holds is seamless. ("Live during the close" within steady.)
+                self._suppress_until = (asyncio.get_running_loop().time()
+                                        + self._close_fade / self._fps + 0.3)
+                asyncio.create_task(self._play_close_fade(close_start, self._rest_frame))
 
     async def _advance(self):
         """Release received frames, each paired (in order) with the audio due by its time and
@@ -313,7 +346,11 @@ class MuseTalkVideoService(FrameProcessor):
             # i needs the audio up to i/fps, so cap at the buffered-audio position. This stops
             # the video running AHEAD of the voice (e.g. if frames briefly outpace audio).
             target = len(self._vbuf)
-            audio_cap = int(self._audio_clock_s * self._fps) + 1
+            # ceil (not floor): a turn's audio is rarely a whole number of frames
+            # (13.6s*12 = 163.2), so int()/floor stranded the final sub-frame of audio to the
+            # delayed video_end drain -> it played ~1s late as a blip (PROBLEMS-AND-FIXES P10).
+            # ceil makes the trailing frame reachable so the last sub-frame releases in step.
+            audio_cap = math.ceil(self._audio_clock_s * self._fps) + 1
             target = min(target, audio_cap)
             while self._released_idx < target:
                 await self._emit_pair(self._released_idx)
@@ -369,6 +406,30 @@ class MuseTalkVideoService(FrameProcessor):
                 _e, af, ad = self._abuf[self._aidx]
                 self._aidx += 1
                 await self.push_frame(af, ad)
+
+    async def _play_close_fade(self, last_bytes: bytes, rest_bytes: bytes):
+        """Free-run a pixel cross-dissolve (last spoken frame -> rest pose) at fps so the mouth
+        eases shut at end of turn. Untagged frames (like the idle loop) so the non-live transport
+        draws them on its own clock -- NOT audio-paired, so the _advance audio-cap can't strand
+        them when the render fell behind (video > audio). We blend PIXELS because MuseTalk renders
+        silence as a PARTED mouth, not closed (measured), so feeding it can't close the mouth. The
+        final blended frame == the rest pose, so the neutral the server holds afterwards is seamless.
+        Best-effort: any failure just leaves the prior clean snap."""
+        try:
+            last = np.frombuffer(last_bytes, dtype=np.uint8).astype(np.float32)
+            rest = np.frombuffer(rest_bytes, dtype=np.uint8).astype(np.float32)
+            if last.shape != rest.shape:
+                return
+            interval = 1.0 / self._fps
+            for j in range(1, self._close_fade + 1):
+                a = j / self._close_fade                    # linear: lands exactly on the rest pose
+                blended = ((1.0 - a) * last + a * rest).astype(np.uint8).tobytes()
+                await self.push_frame(
+                    OutputImageRawFrame(image=blended, size=self._size, format="RGB"),
+                    FrameDirection.DOWNSTREAM)
+                await asyncio.sleep(interval)
+        except Exception:  # noqa: BLE001 -- close polish only; never disrupt the next turn
+            pass
 
     def _log_live(self, behind: float):
         now = asyncio.get_running_loop().time()
@@ -501,6 +562,7 @@ class MuseTalkVideoService(FrameProcessor):
         elif isinstance(frame, TTSAudioRawFrame):
             sr = getattr(frame, "sample_rate", MUSETALK_SR) or MUSETALK_SR
             ch = getattr(frame, "num_channels", 1) or 1
+            self._tts_sr, self._tts_ch = sr, ch   # for the close crossfade's silence pad
             dur = (len(frame.audio) // (2 * ch)) / sr
             if self._t_audio_first is None:   # first voice chunk of the turn = audio start
                 self._t_audio_first = asyncio.get_running_loop().time()

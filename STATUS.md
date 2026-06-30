@@ -1,6 +1,6 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-23 (avatar frame-deficit fix; baseline `cd88f20`)_
+_Last updated: 2026-06-30 (**LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan — fixes the CPU-contention regression. Investigated a **Chinese-only voice-delay**: root cause is CosyVoice's zh first-chunk TTFB (~2.3s vs en ~1.1s), NOT the LLM/avatar — but the fix conflicts with the avatar on the shared GPU, so it's left UNRESOLVED, see the 2026-06-30 session below + P15. Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the processes, the turn
 > flow, the avatar wire contract, running locally + remote, config reference).
@@ -12,14 +12,89 @@ _Last updated: 2026-06-23 (avatar frame-deficit fix; baseline `cd88f20`)_
 |-------|---------|-------|
 | VAD | Silero (local) | pipeline |
 | STT | Deepgram nova-2 (`en`/`zh`/`th` by `LANGUAGE`) | cloud |
-| LLM | OpenRouter (`OPENROUTER_MODEL`) **default**, or a Chinese weather bot via `LLM_PROVIDER=weather_chain` | cloud / remote chain |
-| TTS | **CosyVoice2-0.5B** local streaming server (female zero-shot), on **vLLM in WSL** (TTFB ~1.1s) | `:8001`, repo `E:\Claude\cosyvoice-local-tts` |
+| LLM | `LLM_PROVIDER=openrouter` (OpenAI-compatible — **cloud OR local Ollama** by `OPENROUTER_BASE_URL`) or `weather_chain` (Chinese weather bot) | cloud / local / remote chain |
+| TTS | **CosyVoice2-0.5B** local streaming (default), or **MOSS-TTS-Realtime** (`TTS_PROVIDER=moss`) | `:8001` cosy (WSL) / `:8003` moss (WSL) |
 | Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | `:8002`, `musetalk` conda env |
+| Config | **Web config panel** — edit `.env` + restart pipeline from the browser | `:7870` (`:8444` over Tailscale) |
 
 WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-output **< 8 s**.
 
-TTS / ElevenLabs / Deepgram-Aura are deliberate **fallback switches** via `TTS_PROVIDER`, not
-multi-provider branching.
+TTS providers (`cosyvoice` default · `moss` · `elevenlabs` · `deepgram`) and LLM providers
+(`openrouter` · `weather_chain`) are deliberate **single-provider switches** via `.env`, not
+multi-provider branching. **Easiest way to change any of this: the config panel (`:7870`).**
+
+## ⭐ Session 2026-06-30: LLM reverted to cloud; Chinese voice-delay diagnosed (shared-GPU conflict)
+
+**1. Reverted the LLM to cloud (the 2026-06-29 plan).** `.env` now: `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`,
+`OPENROUTER_MODEL=google/gemini-2.5-flash-lite` (+ a real `OPENROUTER_API_KEY`). This frees the CPU (the
+local CPU-pinned `qwen2.5:3b-cpu` was the contention source) and gives clean, coherent Chinese text instead
+of the small-model fragments (`你好！…继续吗？`). Keep this.
+
+**2. Diagnosed the "Chinese voice starts later than English" complaint → it is the TTS, and it CONFLICTS with the avatar (P15, NOT RESOLVED).**
+Measured at the boundary: CosyVoice first-audio TTFB is **~2.3 s for Chinese vs ~1.1 s for English** because
+CosyVoice emits a **larger opening stream chunk for zh (~4.4 s of audio vs ~2 s)** before yielding. Ruled out
+(by experiment): text-normalization (no `wetext`/`ttsfrd` frontend in the WSL env), the zero_shot-vs-cross_lingual
+path (forcing zh through cross_lingual didn't change TTFB), and the LLM. The existing `COSYVOICE_FIRST_HOP=5`
+knob cuts zh TTFB to ~1.25 s **but** its extra small GPU inferences starve MuseTalk's render on the shared 16 GB
+card (avatar lips-start jumped ~2 s → ~8 s) — so it was **reverted**. **On one GPU, fast zh TTS and a smooth
+avatar are mutually exclusive; the real fix is a dedicated avatar GPU, not a setting.** Full detail: P15.
+
+**3. Shared-GPU restart order (learned the hard way).** CosyVoice's vLLM must load **before** MuseTalk or it
+crashes `No available memory for the cache blocks`. Recovery / clean baseline = stop all → start cosyvoice on
+the near-empty card → then `scripts/run.ps1` (MuseTalk + pipeline). Healthy VRAM with all three ≈ 300–400 MB free.
+
+---
+
+## ⭐ Session 2026-06-29: MOSS TTS option, web config panel, local-LLM mode, real NCU found
+
+> **⚠️ HONEST CAVEAT (end of session).** The features below were ADDED and work in isolation, but the
+> live experience **regressed**: the MOSS between-sentence delay was **not** resolved and overall latency
+> got **worse** (P13). Leading hypothesis: **CPU contention** — this session ran the LLM on a CPU-pinned
+> local Ollama plus the memory harness / memory-sim / weather mock all on CPU, while the GPU ran
+> CosyVoice-vLLM + MuseTalk; the original smooth baseline used a **cloud** LLM, leaving the CPU free.
+> **Plan: next session revert `.env` to the baseline (cloud LLM + CosyVoice + "weather" voice + steady)
+> and re-measure TTFO before re-trying any of this.** The new CODE is inert until `.env` selects it, so
+> the revert is purely an `.env` change. Baseline values: `WORKFLOW.md §8` + `CLAUDE.md`.
+
+Four things landed this session (all `.env`-switchable; nothing removed):
+
+1. **MOSS-TTS-Realtime as a second TTS provider (`TTS_PROVIDER=moss`).** A streaming server
+   (`local_services/moss_server/app.py`, `moss-tts` conda env, `:8003`) that speaks the **same
+   `/tts/stream` raw-PCM wire contract as the CosyVoice server**, so the pipeline reaches it through
+   the existing CosyVoice client just by repointing `MOSS_URL`. Voice = a fixed reference clip
+   (`MOSS_REF`, clone-only). **Streaming is load-bearing:** the first cut synthesized the whole
+   sentence before sending audio (TTFB ≈ full gen ≈ 8.5s); the streaming rewrite (MOSS's
+   `MossTTSRealtimeStreamingSession` + `AudioStreamDecoder`) drops TTFB to **~0.4s warm**. Run it
+   **eager** (`TORCHDYNAMO_DISABLE=1`, the server's default) — compiled mode recompiles ~3–40s on each
+   new sentence-length and that spikiness reads as "delay between sentences". Needs `CC`/`CXX` (triton)
+   + the `torchcodec` ffmpeg-7 + `nvidia-npp` + `LD_LIBRARY_PATH` fix; launch recipe is in the server
+   docstring. The no-recompile production path is vLLM-Omni (next step). CosyVoice remains the default.
+
+2. **Web config panel (`local_services/config_panel/`, `:7870`).** A stdlib server + single-page UI to
+   **view/edit `.env` and restart the pipeline from the browser** (incl. remotely over Tailscale at
+   `:8444`). Curated dropdowns (language, LLM/TTS provider + model/voice, sync mode, memory) + an
+   advanced section (URLs, FPS, lead frames, jitter, ICE…), live server-status dots, Save (writes
+   `.env` **in place, preserving comments**), and Restart. **Restart kills `:7860` via a native Win32
+   `TerminateProcess`, NOT `taskkill`/PowerShell** — those hang for tens of seconds on this box under
+   CPU load (the bug that first made Restart error out).
+
+3. **LLM can run fully local.** The `openrouter` branch is just an OpenAI-compatible client, so pointing
+   `OPENROUTER_BASE_URL=http://localhost:11434/v1` + `OPENROUTER_MODEL=qwen2.5:3b-cpu` runs a
+   **CPU-pinned local Ollama** model as the chat LLM (measured **TTFB ~0.5s**, good zh, no GPU). The
+   CPU pin matters — the GPU is full of CosyVoice-vLLM + MuseTalk (~680MB free). Swap to `qwen2.5:7b`
+   for better quality (slower on CPU).
+
+4. **Real NCU weather chain found again + a professional CosyVoice voice.** NCU moved off `:8000` to
+   **HTTPS/443** with a self-signed cert (`WEATHER_CHAIN_URL=https://140.115.54.87/chain/resWeatherChain`,
+   `WEATHER_CHAIN_VERIFY_TLS=0`). Verified live: only **`qwen2.5:7b`** (~1.2s) and `gemma3:27b` (~3.85s)
+   are installed; the lighter qwen/gemma sizes 500. CosyVoice's reference voice is now **env-driven**
+   (`COSYVOICE_PROMPT_WAV` / `COSYVOICE_PROMPT_TEXT` / `COSYVOICE_SPK_ID` in `cosyvoice-local-tts/tts_engine.py`,
+   defaulting to the original "weather" speaker) so a professional voice is a config choice, not a hardcode.
+
+New tooling: **`scripts/_capture_synced.py`** — like `_capture.py` but keeps ONLY the real frames between
+the server's `video_start`/`video_end` markers (auto-detecting frame size), so the offline mp4 is A/V-synced
+(the old probe kept the neutral lead frames → lips trailed the muxed audio). Research: a full
+**Chinese-TTS-alternatives comparison** under `research/chinese-tts-alternatives/` (REPORT.md + per-model JSON).
 
 ## ⭐ Weather-bot mode + local memory harness (2026-06-23, new in this baseline)
 
@@ -31,12 +106,29 @@ harness wrapped around it** (`AVATAR_MEMORY=1`): a `MemoryStore` (profile + roll
 log under `state/avatar_memory/`) that **rewrites** the utterance into a self-contained zh query via
 local **`qwen2.5:3b-cpu`** (Ollama, CPU-pinned so the GPU stays free; ~0.77s/rewrite) before the
 chain call, and **distills** the conversation into durable memory on disconnect *and* recovers
-leftover turns on startup. To run it: `LLM_PROVIDER=weather_chain LANGUAGE=zh`. NCU was down during
-build, so `scripts/mock_weather_chain.py` (:8077) is a local stand-in (same path + LangServe SSE,
-answers via CPU qwen) — verified live end-to-end (TTFO 5.7s). Full detail: the
+leftover turns on startup. To run it: `LLM_PROVIDER=weather_chain LANGUAGE=zh`. **NCU is back up
+(2026-06-29) at `https://140.115.54.87/chain/resWeatherChain` — HTTPS/443, self-signed cert, so set
+`WEATHER_CHAIN_VERIFY_TLS=0`; `qwen2.5:7b` is the fast working model (~1.2s).** `scripts/mock_weather_chain.py`
+(:8077) remains a local stand-in (same path + LangServe SSE, answers via CPU qwen) for when NCU is down.
+Full detail: the
 `project-visualllm-weather-chain-memory` memory; key files `local_services/weather_chain_llm.py`,
 `local_services/avatar_memory.py`, `pipeline/stages/llm.py`. Tooling: `scripts/probe_weather_chain.py`,
 `tools/chat-cpu.html` (a standalone CPU-model chat tester).
+
+**Chain model latency (measured 2026-06-24, NCU live).** The whole weather turn is dominated by the
+**remote chain's generation time** (STT + local memory-rewrite + CosyVoice ~2.5s are minor; MuseTalk
+is off the critical path). `WEATHER_CHAIN_MODEL` picks the model NCU runs. Timed against the live NCU
+server with the same zh question:
+
+| `WEATHER_CHAIN_MODEL` | time-to-answer | notes |
+|---|---|---|
+| `gemma3:27b` (old default) | **~21–33 s** | cleaner Traditional zh, but ~20× slower |
+| **`qwen2.5:7b`** (now the `.env` default) | **~1.5 s warm / ~14 s cold** | answer grounded + correct; occasionally mixes a simplified char / "Taipei" |
+| `gemma3:12b/4b`, `qwen2.5:3b`, `llama3.1:8b` | n/a | **not pulled on NCU** (chain closes the stream → `RemoteProtocolError`) |
+
+So `qwen2.5:7b` is the fastest model NCU actually serves — the practical floor. The **first** query of a
+session can still be ~10–15 s while NCU warms/loads the model, then it's ~1.5 s. (config.py default is
+still `gemma3:27b`; the live `.env` overrides to `qwen2.5:7b`.)
 
 ## ⭐ Current baseline (2026-06-23, commit `cd88f20`)
 
@@ -51,12 +143,12 @@ P9/P10 + the run notes below):
    stream init / `config` / `_warmup` / the `speech_end` tail-pad. Frame count is now `audio_sec*fps`
    end-to-end. **Keep `MUSETALK_FPS` a divisor of 16000** (8/10/16/20/25…); the fix makes 12 correct
    anyway. Verified: warmup `7→8 frames/segment`; a 13.56s reply renders **163** frames (was 141).
-2. **Leftover-audio blip ~1–2s AFTER the turn — KNOWN ISSUE, fix REVERTED by preference (P10).** Once
-   the frame count was correct, a fraction-of-a-second of audio still played ~1–2s late (steady's
-   `_advance` floor-cap stranded the final sub-frame of audio to the delayed `video_end` drain). A
-   `ceil`-the-cap fix was implemented + verified, then **rolled back — the prior behavior was judged
-   better**, so the baseline keeps the blip. Root cause + the one-line re-apply path are in
-   `docs/PROBLEMS-AND-FIXES.md` P10.
+2. **Leftover-audio blip ~1–2s AFTER the turn — FIXED (P10, re-applied 2026-06-24).** Once the frame
+   count was correct, a fraction-of-a-second of audio still played ~1–2s late (steady's `_advance`
+   floor-cap `int()` stranded the final sub-frame of audio to the delayed `video_end` drain). Fix =
+   `int()`→`math.ceil` on the `audio_cap` (`musetalk_video.py::_advance`) so the trailing frame is
+   reachable and the last sub-frame releases in step. (Historically reverted-by-preference; verified
+   2→0 stranded chunks and re-applied this session.) `docs/PROBLEMS-AND-FIXES.md` P10.
 3. **CosyVoice wouldn't start on the shared GPU — FIXED (config).** vLLM's `gpu_memory_utilization`
    was hardcoded `0.2` (a 3.26GB ceiling, below vLLM's own ~4GB footprint → KV cache negative → crash:
    "No available memory for the cache blocks"). Now **env-overridable, default `0.3`**
@@ -64,6 +156,41 @@ P9/P10 + the run notes below):
    75k tokens, fits the ~5.4GB free alongside MuseTalk (it grabs ~2.8GB, leaving ~2.5GB). The 3 GPU
    services (MuseTalk + CosyVoice-vLLM + the desktop) share one 16GB card — if either errors after
    opening another heavy GPU app, that's the VRAM ceiling: close something or nudge the util fraction.
+
+## ⭐ Session 2026-06-24: breathing idle removed; smooth mouth-close investigated + ABANDONED
+
+1. **Breathing idle removed (user pick).** `MUSETALK_IDLE_MOTION=0` — between turns the face holds the
+   static neutral portrait instead of the synthesized breathing/sway loop. Server reads it from OS env,
+   so `run.ps1` now propagates it.
+2. **Smooth end-of-turn mouth-close — INVESTIGATED, NOT SHIPPED (kept the clean snap).** _[SUPERSEDED
+   2026-06-27 — now FIXED via the free-run close crossfade; see the 2026-06-27 session below.]_ The mouth
+   snaps to the resting face at end of turn. Root cause is a **rendered→photo domain jump** (every
+   MuseTalk frame sits ~5px from the neutral *photo* because rendered frames come from the VAE), not an
+   open/closed-mouth jump — so a silence-rendered tail did NOT help. A pixel **crossfade** (last spoken
+   frame → neutral) is smooth at the SERVER, but in **steady mode it cannot be delivered**: the non-live
+   transport paces video by the interleaved real-time **audio** frames, and the close has no audio, so
+   trailing frames can't be clocked — three delivery attempts (burst / `asyncio.sleep` pacing /
+   silent-audio pairing) each collapsed or jittered (proven at the WebRTC delivery path). **Conclusion:
+   a smooth close needs either `live` mode (video free-runs on its own clock) — but the user rejected
+   live for the ~0.75s lip trail — or a rendered-rest-pose (hold a VAE-rendered closed-mouth frame as
+   the rest pose so the domain pop ~vanishes; untried). All close-crossfade code was reverted; the end
+   is the clean snap.** Full write-up: `docs/PROBLEMS-AND-FIXES.md` P12. **KEPT:** the P10 ceil
+   audio-blip fix (above).
+
+## ⭐ Session 2026-06-27: choppy close FIXED — free-run close crossfade (steady keeps synced lips)
+
+The end-of-turn mouth snap is fixed. At `video_end` the client cross-dissolves the last spoken frame ->
+the rest pose over `MUSETALK_CLOSE_FADE_FRAMES` (5 = ~0.42s) frames, delivered **free-running** (untagged,
+paced at fps, like the idle loop) so video runs on its own clock just for the close — **"live during the
+close", steady through the speech.** `musetalk_video.py::_play_close_fade`. Supports: `MUSETALK_END_TAIL_FRAMES=0`
+(so the last buffered frame is the last SPOKEN frame) + a server pump change so it settles to the NEUTRAL
+rest pose when idle even with END_TAIL=0 (`musetalk_server/app.py`). Two earlier tries that DIDN'T work,
+both ruled out on the delivery path: (1) rest-pose swap (only halves the *domain* pop, mouth still
+shape-snaps), reverted; (2) audio-PAIRED crossfade (the `_advance` audio-cap strands the close frames
+when the render runs behind). Free-run sidesteps both. **Verified on the WebRTC delivery path** (not the
+offline capture, which bypasses the transport): the mouth-to-rest distance now ramps over ~5 frames
+(snap-index 0.92 -> 0.58) instead of one big step. Set `MUSETALK_CLOSE_FADE_FRAMES=0` (+ END_TAIL>0) for
+the old clean snap. `docs/PROBLEMS-AND-FIXES.md` P12. Delivery-path tooling: `scratchpad/probe_close.py`.
 
 ## ⭐ Cleanup (2026-06-22): collapsed to one stack — MuseTalk-only
 
@@ -175,8 +302,11 @@ pipecat 1.3.0, so `video_out_is_live = not config.avatar_sync_with_audio`. One f
   single-client session guard, watchdog).
 - `local_services/musetalk_video.py` — Pipecat client for the MuseTalk server; owns the
   frame-clocked A/V sync (`_feed_q` pacing, `_align_even` anti-screech guard).
-- `local_services/cosyvoice_tts.py` — CosyVoice streaming TTS client.
+- `local_services/cosyvoice_tts.py` — CosyVoice streaming TTS client (also reused by `TTS_PROVIDER=moss`).
+- `local_services/moss_server/app.py` — MOSS-TTS-Realtime streaming server (same wire contract as cosy).
+- `local_services/config_panel/` — the web config panel (`server.py` + `index.html`, `:7870`).
 - `scripts/preflight.py` — import/drift check. `scripts/measure.py` — unified A/V timing harness.
+  `scripts/_capture_synced.py` — A/V-synced offline avatar capture (real frames only).
 - `archive/` — kept-out-of-tree regression tests.
 
 ## Open / next

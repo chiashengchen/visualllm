@@ -17,6 +17,7 @@ def build_llm(cfg: Config, memory=None):
             url=cfg.weather_chain_url,
             model=cfg.weather_chain_model,
             memory=memory,
+            verify_tls=cfg.weather_chain_verify_tls,
         )
 
     from pipecat.services.openai.llm import OpenAILLMService

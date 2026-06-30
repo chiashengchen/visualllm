@@ -12,14 +12,19 @@ time-to-first-output (TTFO) **< 8 s**.
 
 ## 1. The big picture — three processes + a browser
 
-The system is **three separate programs** plus the user's browser. They are intentionally
-separate: the TTS LLM and the avatar render each need their own GPU environment.
+The system is **three core programs** plus the user's browser (and two optional helpers). They are
+intentionally separate: the TTS LLM and the avatar render each need their own GPU environment.
 
 | Process | Runs in | Port | Job |
 |---|---|---|---|
 | **CosyVoice TTS** (`run_vllm_server.sh`) | `cosyvllm` conda env in **WSL** (GPU/vLLM) | **8001** | Text → streamed voice audio. Separate repo `E:\Claude\cosyvoice-local-tts` |
 | **Avatar server** (`local_services/musetalk_server/app.py`) | `musetalk` conda env (GPU) | **8002** | Turns voice audio into lip-synced RGB frames (MuseTalk) |
 | **Pipeline** (`pipeline/main.py`) | system Python 3.11 (has Pipecat) | **7860** | VAD→STT→LLM→TTS→avatar glue, serves the web client, owns the WebRTC connection |
+| _opt._ **MOSS TTS** (`local_services/moss_server/app.py`) | `moss-tts` conda env (GPU) | **8003** | Alternative TTS (`TTS_PROVIDER=moss`); same `/tts/stream` contract as CosyVoice |
+| _opt._ **Config panel** (`local_services/config_panel/server.py`) | system Python 3.11 | **7870** | Edit `.env` + restart the pipeline from a browser (`§8`) |
+
+The LLM stage runs cloud (OpenRouter), a **local Ollama** model (point `OPENROUTER_BASE_URL` at
+`localhost:11434/v1`), or the NCU weather chain — no extra local process unless you run Ollama.
 
 The pipeline talks to the avatar over a **local websocket** (`ws://localhost:8002/stream`) and
 to CosyVoice over HTTP (`COSYVOICE_URL`). The browser only ever talks to the **pipeline** (7860),
@@ -74,11 +79,17 @@ only by `.env` (no provider-selection branching — see `CLAUDE.md`).
 interim + final transcripts. Language follows `LANGUAGE` (`en-US` / `zh-TW` / `th`). Needs
 `DEEPGRAM_API_KEY`.
 
-### LLM — OpenRouter
-`pipeline/stages/llm.py`. Any model via `OPENROUTER_MODEL` (default Gemini Flash Lite). The
-response is **streamed and sentence-aggregated** so TTS can start on sentence 1. A short
-system prompt (in `pipeline/config.py`) keeps replies spoken-style (no markdown/emoji).
-Needs `OPENROUTER_API_KEY`.
+### LLM — OpenRouter (cloud or local Ollama) / weather_chain
+`pipeline/stages/llm.py`. `LLM_PROVIDER=openrouter` builds an OpenAI-compatible client, so it points at
+**either cloud OpenRouter** (`OPENROUTER_BASE_URL=https://openrouter.ai/api/v1` + a real key) **or a
+local Ollama** (`OPENROUTER_BASE_URL=http://localhost:11434/v1`, `OPENROUTER_API_KEY=ollama`,
+`OPENROUTER_MODEL=qwen2.5:3b-cpu` — CPU-pinned, ~0.5s TTFB, keeps the GPU free). The response is
+**streamed and sentence-aggregated** so TTS can start on sentence 1; a short system prompt (in
+`pipeline/config.py`, zh/th/en variants) keeps replies spoken-style. `LLM_PROVIDER=weather_chain` swaps
+in the NCU zh weather bot instead (see `§3` weather note + STATUS.md). **Current default = cloud
+`google/gemini-2.5-flash-lite`** (2026-06-30): the local CPU Ollama caused a latency regression and
+fragmented Chinese; cloud frees the CPU and gives coherent zh. NOTE: the LLM is **not** the reason
+Chinese voice starts later than English — that's CosyVoice's zh first-chunk TTFB (`docs/PROBLEMS-AND-FIXES.md` P15).
 
 ### TTS — CosyVoice2 on vLLM (default) / ElevenLabs / Deepgram Aura (fallbacks)
 `pipeline/stages/tts.py`. Converts the LLM text to voice audio chunks, streamed.
@@ -88,7 +99,13 @@ Needs `OPENROUTER_API_KEY`.
   `run_vllm_server.sh`). **`COSYVOICE_URL` must be the WSL IP, NOT localhost** (WSL2's localhost
   relay buffers the streaming audio ~2s). The original Windows `tts`-env PyTorch server is the
   fallback (set `COSYVOICE_URL=http://localhost:8001` + start it).
-- **Fallbacks**: `TTS_PROVIDER=elevenlabs` (`flash_v2_5`, multilingual cloud) or `deepgram`
+- **MOSS** (`TTS_PROVIDER=moss`): the local MOSS-TTS-Realtime server at `MOSS_URL` (`:8003`, `moss-tts`
+  env). It speaks the **same `/tts/stream` raw-PCM contract**, so the CosyVoice client is reused as-is.
+  Voice = a fixed reference clip (`MOSS_REF`, clone-only). Run it **eager** (`TORCHDYNAMO_DISABLE=1`,
+  the server default) or new sentence-lengths trigger ~3–40s `torch.compile` recompiles felt as
+  between-sentence stalls. Full launch recipe (CC/triton + torchcodec ffmpeg-7/nvidia-npp/LD path) is in
+  `local_services/moss_server/app.py`'s docstring.
+- **Cloud fallbacks**: `TTS_PROVIDER=elevenlabs` (`flash_v2_5`, multilingual cloud) or `deepgram`
   (Deepgram **Aura**, reuses `DEEPGRAM_API_KEY`, English-only).
 
 ### Avatar (client side) — `MuseTalkVideoService`
@@ -178,6 +195,11 @@ keeps the downstream PCM whole-sample. See `docs/PROBLEMS-AND-FIXES.md` P3.
 
 ## 6. Running the system (locally, on the GPU box)
 
+**One-click:** double-click **`Run VisualLLm.exe`** (repo root) — it starts the WSL TTS, the avatar +
+pipeline (`run.ps1`), and the config panel, then opens `/client/`; press Enter in its window to stop
+everything. It's a C# shim (`scripts/Launcher.cs`) over `scripts/launch.ps1`; rebuild via
+`.\scripts\build-exe.ps1`. The manual sequence below is for running/debugging a single stage:
+
 ```bash
 # 1. CosyVoice TTS server — vLLM in WSL (TTFB ~1.1s). Then set COSYVOICE_URL to the WSL IP.
 wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server.sh"   # :8001
@@ -186,6 +208,9 @@ wsl -d Ubuntu -e bash -c "bash /mnt/e/Claude/cosyvoice-local-tts/run_vllm_server
 #   crashes "No available memory for the cache blocks" (0.2 was too low). Raise toward 0.35 if a
 #   heavy GPU app is closed; lower if MuseTalk OOMs. The log line "Available KV cache memory" must
 #   be positive.
+#   ORDER IS REQUIRED: start CosyVoice (this step) BEFORE MuseTalk. At util 0.3 vLLM needs the card
+#   mostly free; restarting it while MuseTalk already holds ~5GB crashes the same way. If you must
+#   recover, stop all three, start cosyvoice here on the near-empty card, THEN run.ps1. (P15.)
 
 # 2 + 3. MuseTalk avatar server + pipeline (one script: starts both, propagates the MuseTalk knobs)
 .\scripts\run.ps1
@@ -245,13 +270,15 @@ in order of effectiveness:
 |---|---|---|
 | `LANGUAGE` | `en` | `en` / `zh` / `th` (STT + voice) |
 | `ECHO_GUARD` | `0` | barge-in (mic always live -- use headphones). `1` = half-duplex mute, but it's BROKEN under steady (mic stuck-muted after a turn, P11); only use `1` with `MUSETALK_SYNC_MODE=live` |
-| `TTS_PROVIDER` | `cosyvoice` | `elevenlabs` (multilingual cloud) / `deepgram` (Aura, en-only) fallbacks |
+| `TTS_PROVIDER` | `cosyvoice` | `moss` (local MOSS-TTS-Realtime, `:8003`) / `elevenlabs` (cloud) / `deepgram` (Aura, en-only) |
 | `COSYVOICE_URL` | `http://localhost:8001` | the CosyVoice server — set to the **WSL IP** for the vLLM server (NOT localhost; the relay buffers the stream), localhost for the Windows fallback |
 | `COSYVOICE_VOICE` / `COSYVOICE_PACE_RATE` | `weather` / `1.3` | zero-shot speaker id / GPU-pacing cap (server-side) |
+| `COSYVOICE_PROMPT_WAV` / `_TEXT` / `_SPK_ID` | *(unset → "weather")* | *(set in the **cosyvoice repo** env)* override the registered reference voice with any clean clip + its exact transcript — how a "professional" voice is selected without editing source |
+| `MOSS_URL` / `MOSS_REF` | `http://localhost:8003` / `assets/moss_pro_ref.wav` | the MOSS server (set to the **WSL IP**, same rule as CosyVoice) + its fixed reference voice clip (`MOSS_REF` is read by the server, not the pipeline) |
 | `DEEPGRAM_TTS_VOICE` | `aura-2-helena-en` | Aura voice when `TTS_PROVIDER=deepgram` |
-| `OPENROUTER_MODEL` | `google/gemini-2.5-flash-lite` | any OpenRouter model |
+| `OPENROUTER_MODEL` / `OPENROUTER_BASE_URL` | `google/gemini-2.5-flash-lite` / `https://openrouter.ai/api/v1` | model + endpoint. Point the base URL at `http://localhost:11434/v1` (+ `OPENROUTER_API_KEY=ollama`, `OPENROUTER_MODEL=qwen2.5:3b-cpu`) to run a **local CPU Ollama** chat model (~0.5s TTFB, GPU-free) |
 | `LLM_PROVIDER` | `openrouter` | `weather_chain` = dedicated zh weather bot (NCU LangServe `/stream`); needs `LANGUAGE=zh`. One flip reverts to general chat |
-| `WEATHER_CHAIN_URL` / `WEATHER_CHAIN_MODEL` | `http://140.115.54.87:8000/chain/resWeatherChain` / `gemma3:27b` | the remote weather chain base URL (service appends `/stream`) + its Ollama model |
+| `WEATHER_CHAIN_URL` / `_MODEL` / `_VERIFY_TLS` | `https://140.115.54.87/chain/resWeatherChain` / **`qwen2.5:7b`** / `0` | the remote weather chain (NCU moved to **HTTPS/443**; self-signed cert → keep `VERIFY_TLS=0`). **`qwen2.5:7b` (~1.2s) is the fast working model; `gemma3:27b` ~3.85s; lighter sizes 500 (not installed on NCU)** — see STATUS.md weather table |
 | `AVATAR_MEMORY` | `1` | grow the virtual human's memory (profile + rolling summary) across conversations; `0` = off. Wrapped around the stateless chain |
 | `MEMORY_LLM_MODEL` / `MEMORY_LLM_URL` | `qwen2.5:3b-cpu` / `http://localhost:11434/v1` | local Ollama model that rewrites the query + distills the chat. **CPU-pinned** (0.77s/rewrite) so MuseTalk + CosyVoice keep the GPU; set `qwen2.5:3b` to use the GPU |
 | `MEMORY_LLM_GATED` / `AVATAR_MEMORY_DIR` | `1` / `state/avatar_memory` | gate the rewrite to context-dependent turns (0 = always) / where profile.json + summary.txt + session.jsonl live (gitignored) |
@@ -261,7 +288,8 @@ in order of effectiveness:
 | `COSYVOICE_VLLM_GPU_UTIL` | `0.3` | *(set in the **cosyvoice repo**, not this `.env`)* fraction of the 16GB card vLLM may use. 0.2 was too low (< its ~4GB footprint → KV cache crash); 0.3 fits alongside MuseTalk. Raise to ~0.35 with more free VRAM |
 | `MUSETALK_LEAD_FRAMES` | `14` | video-start cushion — **load-bearing** (lower starves the queue → freeze) |
 | `MUSETALK_FEED_BURST_S` | `1.0` | burst the first 1s of a turn's audio un-paced → renderer not starved at turn start (lip-start lag ~1.9s→~0.8s; `docs/PROBLEMS-AND-FIXES.md` P2) |
-| `MUSETALK_END_TAIL_FRAMES` | `10` | ease-out neutral frames after speech (softer mouth-close) |
+| `MUSETALK_END_TAIL_FRAMES` | `0` | static neutral frames after speech. **0** with the close crossfade below (so the last buffered frame stays the last SPOKEN frame); `>0` = the old clean snap. The server settles to neutral when idle regardless |
+| `MUSETALK_CLOSE_FADE_FRAMES` | `5` | ease the mouth shut: client cross-dissolves last spoken frame → rest pose over N frames (~0.42s @12fps), delivered **free-run/untagged** ("live during the close") so it survives steady's non-live transport; `0` = clean snap; pairs with `END_TAIL=0` (`docs/PROBLEMS-AND-FIXES.md` P12) |
 | `BOT_VAD_STOP_FALLBACK_SECS` | `600` | steady-screech fix: keep high so a render stall can't discard the partial audio buffer |
 | `WEBRTC_ICE_SUBNET` | `100.64.0.0/10` | pin WebRTC ICE host candidates to the Tailscale interface (fixes the intermittent remote mic); `0` = advertise all |
 | `CLIENT_JITTER_BUFFER_MS` | `400` | receive-side WebRTC jitter buffer (0 = off); raise for a remote viewer |
@@ -271,7 +299,17 @@ in order of effectiveness:
 Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY` +
 `ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`). With `LLM_PROVIDER=weather_chain`
 the OpenRouter key isn't used; instead the NCU chain must be reachable and Ollama running
-with the `MEMORY_LLM_MODEL` (`qwen2.5:3b-cpu`).
+with the `MEMORY_LLM_MODEL` (`qwen2.5:3b-cpu`). For a **local LLM** the key can be the literal
+`ollama` (no real key) since the request goes to localhost.
+
+### The easy way: the web config panel (`:7870`)
+Rather than hand-editing `.env`, run `python -m local_services.config_panel.server` (system Python)
+and open **`http://localhost:7870`** (or `https://<tailnet>:8444` remotely). It exposes the curated
+switches above as dropdowns + an advanced section, shows live server-status dots, **Save** (writes
+`.env` in place, preserving every comment), and **Restart pipeline**. The Restart kills `:7860` with a
+native Win32 `TerminateProcess` (not `taskkill`/PowerShell — those hang for tens of seconds on this box
+under CPU load) and relaunches `python -m pipeline.main` detached. It only restarts the pipeline; the
+TTS/avatar servers are managed separately (the status dots tell you if the provider you picked is down).
 
 ---
 
@@ -285,8 +323,10 @@ with the `MEMORY_LLM_MODEL` (`qwen2.5:3b-cpu`).
 | `pipeline/metrics.py` | `TtfoMeter` (the < 8 s metric) |
 | `local_services/musetalk_video.py` | Client-side avatar processor + frame-clocked A/V sync + `_align_even` |
 | `local_services/musetalk_server/app.py` | MuseTalk GPU server (ws, frame pump, sync markers, session guard) |
-| `local_services/cosyvoice_tts.py` | CosyVoice streaming TTS client |
-| `scripts/preflight.py` | Import/drift check |
+| `local_services/cosyvoice_tts.py` | CosyVoice streaming TTS client (reused by `TTS_PROVIDER=moss`) |
+| `local_services/moss_server/app.py` | MOSS-TTS-Realtime streaming server (same wire contract as cosy) |
+| `local_services/config_panel/` | The web config panel (`server.py` + `index.html`, `:7870`) |
+| `scripts/preflight.py` | Import/drift check. `scripts/_capture_synced.py` = A/V-synced offline capture |
 | `STATUS.md` | Live state + decision log (source of truth) |
 
 ---

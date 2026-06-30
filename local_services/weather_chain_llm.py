@@ -52,12 +52,16 @@ class WeatherChainLLMService(LLMService):
     """Streams answers from the remote LangServe weather chain, optionally rewriting
     the user's utterance through a local MemoryStore first (context engineering)."""
 
-    def __init__(self, *, url: str, model: str, memory=None, **kwargs):
+    def __init__(self, *, url: str, model: str, memory=None, verify_tls: bool = True, **kwargs):
         super().__init__(**kwargs)
         self._url = url.rstrip("/") + "/stream"
         self._model = model
         self._memory = memory
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
+        # verify_tls=False is needed for the NCU server's self-signed cert on its IP-based
+        # HTTPS endpoint (https://140.115.54.87). Keep it True for any properly-certed host.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=5.0), verify=verify_tls
+        )
 
     @staticmethod
     def _last_user_text(context) -> str:

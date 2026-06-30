@@ -1,5 +1,8 @@
 # Setup — buying & wiring the APIs (dedicated provider per stage)
 
+> **➡️ Superseded by [`INSTALL.md`](../INSTALL.md)** for the current local stack. This file is kept
+> only for the cloud-fallback (ElevenLabs / Simli) provider-shopping details.
+
 > **⚠️ Partly historical (the original cloud-API setup guide).** The current default stack is
 > mostly **local**: TTS = **CosyVoice2 on vLLM in WSL** (not ElevenLabs), avatar = **MuseTalk**
 > local server (not Simli). The only paid APIs still required are **Deepgram** (STT) and

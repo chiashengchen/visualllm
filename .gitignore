@@ -22,3 +22,13 @@ output/
 
 # Avatar memory (per-user runtime state: profile, summary, session log)
 state/
+
+# Vendored CosyVoice server (weights + upstream clone + runtime are NOT committed)
+tts/cosyvoice-server/CosyVoice/
+tts/cosyvoice-server/outputs/
+tts/cosyvoice-server/__pycache__/
+tts/cosyvoice-server/*.log
+
+# Scratch logs at repo root
+scratchpad_*.log
+_*.log

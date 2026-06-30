@@ -72,6 +72,9 @@ class Config:
         "WEATHER_CHAIN_URL", "http://140.115.54.87:8000/chain/resWeatherChain"
     )  # base; the service appends /stream
     weather_chain_model: str = _get("WEATHER_CHAIN_MODEL", "gemma3:27b") or "gemma3:27b"
+    # NCU serves the chain over IP-based HTTPS with a self-signed cert -> verify off.
+    # Set WEATHER_CHAIN_VERIFY_TLS=1 for a properly-certed host (or the local mock).
+    weather_chain_verify_tls: bool = (_get("WEATHER_CHAIN_VERIFY_TLS", "0") or "0") not in ("0", "false", "False", "")
 
     # --- Avatar memory harness (fully local: qwen2.5:3b on CPU via Ollama) ---
     # The chain is stateless, so the virtual human's growing memory lives here.
@@ -88,8 +91,9 @@ class Config:
     # CosyVoice (local CosyVoice2-0.5B streaming server) is the default -- a female
     # zero-shot voice, no per-token cloud cost. TTS_PROVIDER=elevenlabs falls back to
     # ElevenLabs flash_v2_5 (multilingual cloud); TTS_PROVIDER=deepgram to Deepgram
-    # Aura (reuses DEEPGRAM_API_KEY, English-only). These are deliberate fallback
-    # switches, not a return to multi-provider branching.
+    # Aura (reuses DEEPGRAM_API_KEY, English-only); TTS_PROVIDER=moss to the local
+    # MOSS-TTS-Realtime server (professional cloned voice). These are deliberate
+    # fallback switches, not a return to multi-provider branching.
     tts_provider: str = (_get("TTS_PROVIDER", "cosyvoice") or "cosyvoice").lower()
     # CosyVoice2 local streaming server (local_services/cosyvoice_tts.py client ->
     # the user's cosyvoice-local-tts FastAPI server). Voice "weather" is its registered
@@ -97,6 +101,12 @@ class Config:
     cosyvoice_url: str = _get("COSYVOICE_URL", "http://localhost:8001")
     cosyvoice_voice: str = _get("COSYVOICE_VOICE", "weather") or "weather"
     cosyvoice_sample_rate: int = int(_get("COSYVOICE_SAMPLE_RATE", "24000") or "24000")
+    # MOSS-TTS-Realtime local streaming server (local_services/moss_server/app.py, runs
+    # in the moss-tts conda env). Same /tts/stream raw-PCM wire contract as CosyVoice, so
+    # TTS_PROVIDER=moss reuses the CosyVoice client pointed at MOSS_URL. The voice is a
+    # fixed reference clip pinned server-side (MOSS_REF); native rate 24 kHz.
+    moss_url: str = _get("MOSS_URL", "http://localhost:8003")
+    moss_sample_rate: int = int(_get("MOSS_SAMPLE_RATE", "24000") or "24000")
     elevenlabs_api_key: str | None = _get("ELEVENLABS_API_KEY")
     elevenlabs_voice_id: str | None = _get("ELEVENLABS_VOICE_ID")
     # flash_v2_5 is low-latency and multilingual (covers zh-TW); override for a

@@ -57,10 +57,15 @@ Set-EnvFromDotenv "MUSETALK_SIZE"
 Set-EnvFromDotenv "MUSETALK_FPS"
 Set-EnvFromDotenv "MUSETALK_LEAD_FRAMES"
 Set-EnvFromDotenv "MUSETALK_END_TAIL_FRAMES"
+Set-EnvFromDotenv "MUSETALK_IDLE_MOTION"
 
 function Test-PortBusy([int]$port) {
-    $c = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
-    return [bool]$c
+    # netstat (native), NOT Get-NetTCPConnection: the CIM cmdlet hangs tens of
+    # seconds under CPU load on this box (the windows-process-tools issue; the
+    # config panel uses netstat for the same reason).
+    $needle = ":{0} " -f $port
+    $out = netstat -ano | Select-String -SimpleMatch $needle -ErrorAction SilentlyContinue
+    return [bool]($out | Where-Object { $_ -match 'LISTENING' })
 }
 
 # Refuse to start over a port that is already taken (the silent bind error that
