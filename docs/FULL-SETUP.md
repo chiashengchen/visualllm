@@ -290,7 +290,7 @@ Minimum to fill:
 LANGUAGE=en                              # en | zh | th
 DEEPGRAM_API_KEY=...
 OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite   # cloud (accurate default). Local Ollama: base_url->:11434/v1 + model. For a reasoning model (qwen3.5:4b) add OPENROUTER_REASONING_EFFORT=none (else ~33s thinking) + OPENROUTER_MAX_TOKENS to cap length. See WORKFLOW.md §8.
 
 STT_PROVIDER=deepgram                    # or sherpa (offline) / funasr
 TTS_PROVIDER=cosyvoice

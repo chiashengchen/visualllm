@@ -101,6 +101,11 @@ OPENROUTER_MODEL=qwen/qwen-2.5-7b-instruct   # or deepseek/deepseek-chat — str
 ELEVENLABS_VOICE_ID=<a voice that sounds good in Mandarin>
 ```
 
+> **Local LLM (Ollama):** set `OPENROUTER_BASE_URL=http://localhost:11434/v1` + `OPENROUTER_API_KEY=ollama`
+> + `OPENROUTER_MODEL=<model>`. For a **reasoning model** like `qwen3.5:4b`, also set
+> `OPENROUTER_REASONING_EFFORT=none` (or it "thinks" ~33s before answering) and optionally
+> `OPENROUTER_MAX_TOKENS` to cap reply length. Full detail: `WORKFLOW.md` §8.
+
 - **STT:** Deepgram supports `zh-TW` (already handled in code when `LANGUAGE=zh`).
 - **LLM:** via OpenRouter you can A/B Qwen / DeepSeek / Gemini for Mandarin with a
   one-line model change — no extra key.

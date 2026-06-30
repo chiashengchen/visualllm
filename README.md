@@ -29,7 +29,7 @@ multi-provider branching). Core knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECON
 |-------|---------|
 | VAD / turn-taking | Silero (local) |
 | STT   | Deepgram (nova-2; `en-US` / `zh-TW` / `th` by `LANGUAGE`) — cloud (default). Local OFFLINE alt via `STT_PROVIDER`: `sherpa` (sherpa-onnx streaming, bilingual zh-en, in-process, CPU/~0 VRAM, recommended) or `funasr` (SenseVoice, `:8004`) — see `INSTALL.md` §6.5 |
-| LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) — cloud |
+| LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) — cloud (default `gemini-2.5-flash-lite`), **or a local Ollama model** (point `OPENROUTER_BASE_URL` at `:11434/v1`; reasoning models like `qwen3.5:4b` need `OPENROUTER_REASONING_EFFORT=none` — see `WORKFLOW.md` §8) |
 | TTS   | **CosyVoice2-0.5B**, local streaming server, female zero-shot voice — **runs on vLLM in WSL** (first-chunk latency ~1.1s; the Windows PyTorch server is the fallback). ElevenLabs / Deepgram Aura are cloud fallbacks via `TTS_PROVIDER` |
 | Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait |
 | Transport | WebRTC → browser at `/client/` |

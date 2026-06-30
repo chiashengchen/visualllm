@@ -60,6 +60,10 @@ are **deliberate fallback switches, not multi-provider branching**:
 - `TTS_PROVIDER` = `cosyvoice` (default) | `moss` (local MOSS-TTS-Realtime, `:8003`) | `elevenlabs` | `deepgram`.
 - `LLM_PROVIDER` = `openrouter` (default; point `OPENROUTER_BASE_URL` at `https://openrouter.ai/api/v1` for
   cloud or `http://localhost:11434/v1` for a local Ollama model) | `weather_chain` (NCU zh weather bot).
+  - **Local reasoning models (e.g. `qwen3.5:4b`):** set **`OPENROUTER_REASONING_EFFORT=none`** or the model
+    "thinks" ~33s before answering — and on Ollama's `/v1` endpoint this is the ONLY switch that works
+    (`think:false`/`chat_template_kwargs` are ignored there; verified 2026-07-01). **`OPENROUTER_MAX_TOKENS`**
+    caps reply length (the verbosity safety net). Both empty-by-default → cloud path unchanged. `pipeline/stages/llm.py`.
 - `STT_PROVIDER` = `deepgram` (default, cloud streaming) | `sherpa` (**recommended local**) | `funasr`.
   - **`sherpa`** = local OFFLINE **STREAMING** STT, **in-process** in the pipeline (system Python, no server),
     sherpa-onnx zipformer **bilingual zh-en**, **CPU/~0 VRAM**. It **drives turn-taking from its own ASR

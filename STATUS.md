@@ -1,6 +1,6 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-06-30 (**VRAM trim + MuseTalk TensorRT** — see the session note immediately below. The shared 16GB card now fits the stack in ~8.4GB working (was ~15.7GB) via reversible knobs, and the avatar render has an optional fp16 TensorRT path (`MUSETALK_TRT=1`, ~2.4× GPU / SSIM 1.0). Branch `feat/offline-stt-sensevoice`, **pushed**. Earlier this day: **Added local OFFLINE STT** — `STT_PROVIDER=sherpa` (sherpa-onnx streaming, in-process, CPU/~0 VRAM, recommended) + `funasr` (SenseVoice segmented, `:8004`); default stays Deepgram. **LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan. Investigated a **Chinese-only voice-delay** (CosyVoice zh TTFB ~2.3s vs en ~1.1s; conflicts with the avatar on the shared GPU → UNRESOLVED, P15). Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
+_Last updated: 2026-07-01 (**Local reasoning-LLM support** — wired local Ollama `qwen3.5:4b` as the pipeline LLM via two new inert-by-default knobs: `OPENROUTER_REASONING_EFFORT=none` (disables qwen3 "thinking" — the only switch that works on Ollama's `/v1`; without it, ~33s/answer) and `OPENROUTER_MAX_TOKENS` (verbosity cap). Live TTFO ~3.8s; concise in zh; cloud gemini still the accurate default. Pushed. Earlier 2026-06-30: **VRAM trim + MuseTalk TensorRT** — see the session note below. The shared 16GB card now fits the stack in ~8.4GB working (was ~15.7GB) via reversible knobs, and the avatar render has an optional fp16 TensorRT path (`MUSETALK_TRT=1`, ~2.4× GPU / SSIM 1.0). Branch `feat/offline-stt-sensevoice`, **pushed**. Earlier this day: **Added local OFFLINE STT** — `STT_PROVIDER=sherpa` (sherpa-onnx streaming, in-process, CPU/~0 VRAM, recommended) + `funasr` (SenseVoice segmented, `:8004`); default stays Deepgram. **LLM reverted to cloud (gemini-2.5-flash-lite)** per the 2026-06-29 plan. Investigated a **Chinese-only voice-delay** (CosyVoice zh TTFB ~2.3s vs en ~1.1s; conflicts with the avatar on the shared GPU → UNRESOLVED, P15). Previously (2026-06-29): MOSS-TTS option, web CONFIG PANEL, local-Ollama LLM mode.)_
 
 > **See `WORKFLOW.md`** for the full end-to-end system workflow (the processes, the turn
 > flow, the avatar wire contract, running locally + remote, config reference).
@@ -22,6 +22,25 @@ WebRTC → browser at `http://localhost:7860/client/`. Goal: time-to-first-outpu
 TTS providers (`cosyvoice` default · `moss` · `elevenlabs` · `deepgram`) and LLM providers
 (`openrouter` · `weather_chain`) are deliberate **single-provider switches** via `.env`, not
 multi-provider branching. **Easiest way to change any of this: the config panel (`:7870`).**
+
+## ⭐ Session 2026-07-01: local reasoning-LLM support (qwen3.5:4b via Ollama)
+
+Wired local Ollama **`qwen3.5:4b`** as the pipeline LLM (`LLM_PROVIDER=openrouter` +
+`OPENROUTER_BASE_URL=http://localhost:11434/v1` + `OPENROUTER_MODEL=qwen3.5:4b`). Pushed on
+`feat/offline-stt-sensevoice` (`f487cbb`); both knobs are **empty-by-default so the cloud path is unchanged**.
+
+- **`OPENROUTER_REASONING_EFFORT=none`** (new) — qwen3.5 is a *thinking* model: by default it burns ~3290 tok /
+  **33s** reasoning before answering (fatal for realtime). `reasoning_effort:"none"` disables it (→ 0.95s TTFB)
+  and is the **ONLY** mechanism that works through Ollama's OpenAI **`/v1`** endpoint — `think:false` and
+  `chat_template_kwargs.enable_thinking` are silently ignored there (they work only on native `/api/chat`).
+- **`OPENROUTER_MAX_TOKENS`** (new) — hard `max_completion_tokens` cap, the safety net for models that ignore
+  the brevity prompt (qwen3.5:4b monologued an 18s EN reply → avatar drift +2.56s; cap → ~10s / +1.23s). Also
+  firmed up all three system prompts (en/zh/th) to "1-2 sentences then stop" — in **zh** that alone yields
+  concise 29-37 tok replies (finish=stop, no truncation).
+- **Live:** TTFO ~3.75-3.83s (under the 8s goal); lips start +0.6-0.7s. **Quality:** good brevity, but a 4B
+  model — occasional EN-word code-switch ("人工 intelligence") + hallucinated specifics; **cloud
+  gemini-2.5-flash-lite is more accurate and remains the recommended default.** Revert = base_url→openrouter +
+  model→gemini + clear the two knobs. Code: `pipeline/stages/llm.py`, `pipeline/config.py`.
 
 ## ⭐ Session 2026-06-30 (latest): VRAM trim ~15.7GB→~8.4GB + MuseTalk TensorRT path
 

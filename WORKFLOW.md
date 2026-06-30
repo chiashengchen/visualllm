@@ -99,13 +99,26 @@ only by `.env` (no provider-selection branching — see `CLAUDE.md`).
 `pipeline/stages/llm.py`. `LLM_PROVIDER=openrouter` builds an OpenAI-compatible client, so it points at
 **either cloud OpenRouter** (`OPENROUTER_BASE_URL=https://openrouter.ai/api/v1` + a real key) **or a
 local Ollama** (`OPENROUTER_BASE_URL=http://localhost:11434/v1`, `OPENROUTER_API_KEY=ollama`,
-`OPENROUTER_MODEL=qwen2.5:3b-cpu` — CPU-pinned, ~0.5s TTFB, keeps the GPU free). The response is
-**streamed and sentence-aggregated** so TTS can start on sentence 1; a short system prompt (in
-`pipeline/config.py`, zh/th/en variants) keeps replies spoken-style. `LLM_PROVIDER=weather_chain` swaps
-in the NCU zh weather bot instead (see `§3` weather note + STATUS.md). **Current default = cloud
-`google/gemini-2.5-flash-lite`** (2026-06-30): the local CPU Ollama caused a latency regression and
-fragmented Chinese; cloud frees the CPU and gives coherent zh. NOTE: the LLM is **not** the reason
-Chinese voice starts later than English — that's CosyVoice's zh first-chunk TTFB (`docs/PROBLEMS-AND-FIXES.md` P15).
+`OPENROUTER_MODEL=qwen2.5:3b-cpu` — CPU-pinned, ~0.5s TTFB, keeps the GPU free; or `qwen3.5:4b` on the
+GPU now the VRAM trim freed headroom). The response is **streamed and sentence-aggregated** so TTS can
+start on sentence 1; a short system prompt (in `pipeline/config.py`, zh/th/en variants) keeps replies
+spoken-style. `LLM_PROVIDER=weather_chain` swaps in the NCU zh weather bot instead (see `§3` weather note
++ STATUS.md). **Current default = cloud `google/gemini-2.5-flash-lite`** (most accurate); local models are
+viable alternatives. NOTE: the LLM is **not** the reason Chinese voice starts later than English — that's
+CosyVoice's zh first-chunk TTFB (`docs/PROBLEMS-AND-FIXES.md` P15).
+
+**Reasoning ("thinking") models (e.g. `qwen3.5:4b`) — two knobs (2026-07-01):**
+- **`OPENROUTER_REASONING_EFFORT`** → OpenAI `extra.reasoning_effort`. Set **`none`** to disable the hidden
+  reasoning pass, or a thinking model burns ~3290 tok / **33s** before answering (fatal for realtime →
+  0.95s with it off). This is the **only** mechanism that works on Ollama's **`/v1`** endpoint —
+  `think:false` and `chat_template_kwargs.enable_thinking` are ignored there (they work only on native
+  `/api/chat`). Verified `qwen3.5:4b`: 33s → 0.95s TTFB.
+- **`OPENROUTER_MAX_TOKENS`** → `max_completion_tokens`. Hard reply cap, the safety net for models that
+  ignore the brevity prompt (`qwen3.5:4b` monologued an 18s EN reply → avatar drift +2.56s; cap → ~10s).
+  In **zh** the firmed-up brevity prompt alone yields concise 29–37 tok replies (no truncation).
+- Both are **empty/unset by default** → the cloud path is byte-for-byte unchanged. Quality note:
+  `qwen3.5:4b` is concise/fast in zh but a 4B model — occasional EN-word code-switch + hallucinated
+  specifics; cloud gemini is more accurate.
 
 ### TTS — CosyVoice2 on vLLM (default) / ElevenLabs / Deepgram Aura (fallbacks)
 `pipeline/stages/tts.py`. Converts the LLM text to voice audio chunks, streamed.

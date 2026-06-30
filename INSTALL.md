@@ -225,7 +225,7 @@ Fill in:
 LANGUAGE=en                   # en | zh | th
 DEEPGRAM_API_KEY=...
 OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=openai/gpt-4o-mini      # any OpenRouter model
+OPENROUTER_MODEL=openai/gpt-4o-mini      # any OpenRouter model (cloud). Local Ollama: set OPENROUTER_BASE_URL=http://localhost:11434/v1 + a model; a reasoning model (qwen3.5:4b) also needs OPENROUTER_REASONING_EFFORT=none. See WORKFLOW.md §8.
 
 TTS_PROVIDER=cosyvoice        # cosyvoice (default) | moss | elevenlabs | deepgram
 COSYVOICE_URL=http://<WSL-IP>:8001       # Path A: WSL IP. Path B: http://localhost:8001
