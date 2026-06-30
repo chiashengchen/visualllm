@@ -5,7 +5,7 @@
 """
 import numpy as np
 
-from local_services.funasr_server.app import _pcm16_to_float32
+from local_services.funasr_server.app import _pcm16_to_float32, _strip_emoji
 
 
 def test_pcm_conversion():
@@ -17,6 +17,15 @@ def test_pcm_conversion():
     print("PCM conversion OK:", out)
 
 
+def test_strip_emoji():
+    # SenseVoice rich postprocess injects emotion emojis; they must not reach the LLM.
+    assert _strip_emoji("你好\U0001f60a") == "你好"
+    assert _strip_emoji("hello \U0001f3bc world") == "hello  world"
+    assert "\U0001f60a" not in _strip_emoji("test\U0001f60a")
+    print("strip_emoji OK")
+
+
 if __name__ == "__main__":
     test_pcm_conversion()
+    test_strip_emoji()
     print("smoke OK")

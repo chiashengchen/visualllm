@@ -12,10 +12,22 @@ If model download hits the conda cert store, set SSL_CERT_FILE to certifi's cace
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 
 import numpy as np
 from fastapi import FastAPI, Request
+
+# SenseVoice's rich postprocess injects emotion/event EMOJIS (e.g. happy/sad/applause).
+# Those are not spoken words -- feeding them to the LLM as "user text" is noise, so strip
+# all emoji/pictograph codepoints, keeping only the transcript (CJK + ASCII + punctuation).
+_EMOJI = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U0000FE00-\U0000FE0F\U00002B00-\U00002BFF]"
+)
+
+
+def _strip_emoji(text: str) -> str:
+    return _EMOJI.sub("", text).strip()
 
 MODEL_ID = os.environ.get("FUNASR_MODEL", "iic/SenseVoiceSmall")
 DEVICE = os.environ.get("FUNASR_DEVICE", "cpu")
@@ -62,5 +74,5 @@ async def stt(request: Request):
     # SenseVoice prefixes rich tags like <|zh|><|NEUTRAL|>...; strip them, then s2twp.
     from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
-    clean = rich_transcription_postprocess(raw)
+    clean = _strip_emoji(rich_transcription_postprocess(raw))
     return {"text": _state["s2tw"].convert(clean)}
