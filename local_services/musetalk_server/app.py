@@ -105,6 +105,7 @@ class MuseTalkEngine:
         self.fps = fps
         self._ready = False
         self.idx = 0  # base-frame cursor (cycles for video refs; static for a photo)
+        self._trt = None  # set by _init_trt() when MUSETALK_TRT=1; None => PyTorch render path
 
     # --- one-time load ----------------------------------------------------
     def load(self):
@@ -179,10 +180,47 @@ class MuseTalkEngine:
         self._build_idle_loop()
         self._ready = True
         self._warmup()   # pay the first-inference cost NOW so the first real turn isn't cold
+        # VRAM trim: warmup ran dummy segments to pay one-time cuDNN/kernel/alloc costs;
+        # that leaves reserved-but-unused blocks in PyTorch's caching allocator. Return
+        # them to the driver so the idle footprint reflects the real working set (this is
+        # where the measured ~8.7GB vs the model's ~4-6GB gap mostly hides). Best-effort:
+        # an empty_cache failure must never block the server coming up.
+        try:
+            if self.torch.cuda.is_available():
+                self.torch.cuda.synchronize()
+                self.torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 -- cache release is best-effort
+            logger.exception("empty_cache after warmup failed (non-fatal).")
+        # Optional TensorRT render path. Engines are a prebuilt artifact (built offline,
+        # ~7min); load them if present. ANY failure -> stay on the proven PyTorch path.
+        if os.getenv("MUSETALK_TRT", "0").lower() in ("1", "true", "yes"):
+            try:
+                self._init_trt()
+                logger.info("MuseTalk TRT engines loaded (MUSETALK_TRT=1).")
+            except Exception:  # noqa: BLE001 -- TRT is best-effort; fall back to torch
+                logger.exception("TRT init failed; using the PyTorch render path.")
+                self._trt = None
         logger.info(
             f"MuseTalk ready. {len(self.frame_cycle)} base frame(s) prepared; "
             f"{len(self._idle_loop)} idle frame(s)."
         )
+
+    def _init_trt(self):
+        """Load the prebuilt UNet + VAE-decoder TRT engines. Build them offline with
+        local_services/musetalk_server/trt_build.py (see docs/superpowers/plans/
+        2026-06-30-musetalk-tensorrt.md). Raises if the engines are absent."""
+        from .trt_runtime import TRTModule
+
+        cache = SERVER_DIR / "trt_cache"
+        unet_e, vae_e = cache / "unet.engine", cache / "vae.engine"
+        if not (unet_e.exists() and vae_e.exists()):
+            raise RuntimeError(
+                f"TRT engines not found in {cache}; build them offline first."
+            )
+        self._trt = {
+            "unet": TRTModule(str(unet_e), self.device),
+            "vae": TRTModule(str(vae_e), self.device),
+        }
 
     # --- avatar preparation (mmpose-free, cached) -------------------------
     def _avatar_key(self) -> str:
@@ -503,11 +541,26 @@ class MuseTalkEngine:
                     device=self.device, dtype=self.unet.model.dtype
                 )
                 audio_feat = self.pe(w_batch)
-                pred = self.unet.model(
-                    latent_batch, self.timesteps, encoder_hidden_states=audio_feat
-                ).sample
-                pred = pred.to(dtype=self.vae.vae.dtype)
-                recon = self.vae.decode_latents(pred)  # [n,256,256,3] BGR uint8
+                if self._trt is not None:
+                    # TRT path: engines replace the UNet + VAE-decoder GPU calls. The pre/post
+                    # math MUST match VAE.decode_latents exactly so _composite is unchanged:
+                    #   decode_latents = (1/sf)*latents -> vae.decode -> /2+0.5 clamp ->
+                    #                    permute(0,2,3,1) -> *255 uint8 -> [...,::-1] (BGR)
+                    sample = self._trt["unet"](
+                        latent=latent_batch, timestep=self.timesteps, audio=audio_feat
+                    )["sample"]
+                    dec_in = (1.0 / self.vae.scaling_factor) * sample.to(self.vae.vae.dtype)
+                    img = self._trt["vae"](latent=dec_in)["image"]   # (n,3,256,256) raw decode
+                    img = (img / 2 + 0.5).clamp(0, 1)
+                    recon = (
+                        img.permute(0, 2, 3, 1).float().cpu().numpy() * 255
+                    ).round().astype("uint8")[..., ::-1]
+                else:
+                    pred = self.unet.model(
+                        latent_batch, self.timesteps, encoder_hidden_states=audio_feat
+                    ).sample
+                    pred = pred.to(dtype=self.vae.vae.dtype)
+                    recon = self.vae.decode_latents(pred)  # [n,256,256,3] BGR uint8
                 tg = _t.time()
                 gpu_s += tg - (t_whisper if i == 0 else tc)
                 for k in range(n):
@@ -544,8 +597,12 @@ async def stream(ws: WebSocket):
     fps = engine.fps
     seg_samples = engine.samples_for_frames(SEG_FRAMES, fps)   # ceil-sized: exactly SEG_FRAMES/seg
     audio_buf = np.zeros(0, dtype=np.float32)
-    # Bounded queue of rendered frames; the pump drains it at a STEADY fps.
-    out_q: asyncio.Queue = asyncio.Queue(maxsize=600)
+    # Bounded queue of rendered frames; the pump drains it at a STEADY fps. A SMALLER
+    # cap is the documented SAFE lag lever for live mode: under GPU contention the render
+    # skips stale frames instead of letting the lips fall arbitrarily far behind the voice.
+    # Do NOT re-lock the voice to video (that froze it). 600 ~= 30s @20fps (effectively
+    # unbounded); tighten via MUSETALK_OUT_Q for a shorter max trail.
+    out_q: asyncio.Queue = asyncio.Queue(maxsize=int(os.getenv("MUSETALK_OUT_Q", "600")))
     closed = asyncio.Event()
     _active_closed = closed
     loop = asyncio.get_event_loop()
