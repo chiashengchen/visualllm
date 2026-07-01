@@ -336,10 +336,36 @@ pipecat 1.3.0, so `video_out_is_live = not config.avatar_sync_with_audio`. One f
 - `local_services/config_panel/` — the web config panel (`server.py` + `index.html`, `:7870`).
 - `scripts/preflight.py` — import/drift check. `scripts/measure.py` — unified A/V timing harness.
   `scripts/_capture_synced.py` — A/V-synced offline avatar capture (real frames only).
+  `scripts/_drive_frames.py` — frames-vs-audio + render-fps probe (drives :8002 with a WAV, no
+  CosyVoice/pipeline/WebRTC); `scripts/_gpu_contention_hog.py` — GPU compute hog to reproduce the
+  shared-GPU drift offline. Together they produced the P16 numbers.
 - `archive/` — kept-out-of-tree regression tests.
 
-## Open / next
+## Handoff / next (as of 2026-07-01, end of the TRT-baseline session)
 
-- **Live lip-sync tuning (human check):** open `/client/` with a real mic + headphones, speak a
-  multi-sentence turn, and judge steady vs live. Tune `MUSETALK_SYNC_LEAD_S` if the lips lead/trail.
-- Confirm the felt CosyVoice-vLLM latency improvement on a live remote call.
+**Shipped + pushed to `origin/main` (`226497d`):** TensorRT avatar is the baseline (`MUSETALK_TRT=1`),
+fixing the shared-GPU long-turn A/V drift; LLM = cloud `google/gemini-2.5-flash-lite`; all stack docs
++ P16 propagated. Commits: `dfa1552` (TRT code) → `bd1d765` (merge) → `d198ea1`/`30f93bd`/`226497d` (docs).
+
+**Verified this session:** `_drive_frames.py` + `_gpu_contention_hog.py` proved rendered lip frames
+= `audio*fps` (P9/P10 correct); the drift is contention-driven (`drift ≈ audio_len*(1−render_fps/fps)`),
+and TRT holds it flat (+3.94s→+0.36s at 100% contention on a 13.6s reply). Live stack was left running
+(cloud LLM + TRT); TRT load confirmed in `logs/musetalk.err.log` ("TRT engines loaded").
+
+**Not yet done / open, in priority order:**
+1. **Human A/V judgement on a real call** — open `/client/` (mic + headphones), speak a long
+   multi-sentence turn, confirm the lips stay locked to the voice end-to-end with TRT on. The offline
+   proof used a synthetic hog, not the real CosyVoice burst pattern.
+2. **Composite-on-GPU** — the PIL blend is CPU-bound and still ~31% of render even with TRT (~78ms/seg);
+   moving it to torch/GPU adds contention headroom without a 2nd GPU. Highest cheap lever.
+3. **A one-command engine build** — building TRT engines is 4 `trt_export`/`trt_build` one-liners
+   (SETUP.md "TensorRT engines"); wrap them in a `python -m …trt_build` CLI for a fresh machine.
+4. **Dedicated avatar GPU** — the structural fix; removes contention entirely (avatar working set ~4.8GB).
+5. **Confirm the felt CosyVoice-vLLM latency** on a live remote call; Chinese zh-TTS delay (P15) still open.
+6. **Hygiene:** `.superpowers/sdd/*.md` (the memory-*forgetting-benchmark* project, uses `qwen3.5:4b`)
+   sit in this tree — per the public-handoff note that benchmark must NOT be on public `main`; check
+   whether those are tracked/pushed and clean up separately (unrelated to the avatar stack).
+
+**To run cold:** double-click `Run VisualLLm.exe` (brings up WSL CosyVoice → MuseTalk+TRT → pipeline →
+`/client/`). If the bot goes silent after a `wsl --shutdown`, the WSL IP changed — update `COSYVOICE_URL`
+(`wsl hostname -I`).
