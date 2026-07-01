@@ -206,9 +206,9 @@ class MuseTalkEngine:
         )
 
     def _init_trt(self):
-        """Load the prebuilt UNet + VAE-decoder TRT engines. Build them offline with
-        local_services/musetalk_server/trt_build.py (see docs/superpowers/plans/
-        2026-06-30-musetalk-tensorrt.md). Raises if the engines are absent."""
+        """Load the prebuilt UNet + VAE-decoder TRT engines. Build them offline with the
+        trt_export.py + trt_build.py one-liners in SETUP.md ("TensorRT engines"). Raises
+        if the engines are absent (the caller then falls back to the PyTorch path)."""
         from .trt_runtime import TRTModule
 
         cache = SERVER_DIR / "trt_cache"

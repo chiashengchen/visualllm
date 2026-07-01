@@ -31,7 +31,7 @@ multi-provider branching). Core knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECON
 | STT   | Deepgram (nova-2; `en-US` / `zh-TW` / `th` by `LANGUAGE`) — cloud |
 | LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) — cloud |
 | TTS   | **CosyVoice2-0.5B**, local streaming server, female zero-shot voice — **runs on vLLM in WSL** (first-chunk latency ~1.1s; the Windows PyTorch server is the fallback). ElevenLabs / Deepgram Aura are cloud fallbacks via `TTS_PROVIDER` |
-| Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait |
+| Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait, **TensorRT render** (`MUSETALK_TRT=1`, default) |
 | Transport | WebRTC → browser at `/client/` |
 
 ```

@@ -296,9 +296,29 @@ STT_PROVIDER=deepgram                    # or sherpa (offline) / funasr
 TTS_PROVIDER=cosyvoice
 COSYVOICE_URL=http://172.24.44.238:8001  # Path A: the WSL IP (wsl hostname -I). Path B: http://localhost:8001
 MUSETALK_SYNC_MODE=steady                # steady = video-master, synced start (default) | live = voice-instant, lips trail
+MUSETALK_TRT=1                           # TensorRT render (default). Build engines first (below) or it falls back to PyTorch
 ```
 Full knob reference: `WORKFLOW.md` §8. **Reminder:** after `wsl --shutdown` the WSL IP can
 change — re-check `wsl hostname -I` and update `COSYVOICE_URL`.
+
+**TensorRT engines (`MUSETALK_TRT=1`, the baseline).** The avatar defaults to the TensorRT render path
+(~1.5× faster; holds A/V sync under shared-GPU contention where PyTorch drifts on long turns —
+`docs/PROBLEMS-AND-FIXES.md` P16). The engines are **not** shipped (GPU/driver-specific, ~1.75 GB,
+gitignored in `local_services/musetalk_server/trt_cache/`). If they are absent the server logs it and
+**falls back to the PyTorch path** (correct, just slower), so this is optional-but-recommended. Build them
+once in the `musetalk` env (there is no CLI — the export/build are helper functions; run these four
+one-liners, ~7 min; rebuild after a GPU/driver change):
+```powershell
+$py = "E:\miniconda3\envs\musetalk\python.exe"
+# 0) install the TRT libs (from NVIDIA's index)
+& $py -m pip install -r local_services/musetalk_server/requirements-trt.txt --extra-index-url https://pypi.nvidia.com
+# 1) UNet: torch -> ONNX -> fp16 engine
+& $py -c "from local_services.musetalk_server.app import engine; engine.load(); from local_services.musetalk_server.trt_export import export_unet_onnx; export_unet_onnx(engine,'local_services/musetalk_server/trt_cache/unet.onnx')"
+& $py -c "from local_services.musetalk_server.trt_build import build_engine; S=50; build_engine('local_services/musetalk_server/trt_cache/unet.onnx','local_services/musetalk_server/trt_cache/unet.engine',{'latent':((1,8,32,32),(8,8,32,32),(8,8,32,32)),'audio':((1,S,384),(8,S,384),(8,S,384)),'timestep':((1,),(1,),(1,))})"
+# 2) VAE decoder: torch -> ONNX -> fp16 engine
+& $py -c "from local_services.musetalk_server.app import engine; engine.load(); from local_services.musetalk_server.trt_export import export_vae_onnx; export_vae_onnx(engine,'local_services/musetalk_server/trt_cache/vae.onnx')"
+& $py -c "from local_services.musetalk_server.trt_build import build_engine; build_engine('local_services/musetalk_server/trt_cache/vae.onnx','local_services/musetalk_server/trt_cache/vae.engine',{'latent':((1,4,32,32),(8,4,32,32),(8,4,32,32))})"
+```
 
 ---
 

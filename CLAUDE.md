@@ -23,7 +23,7 @@ A/V-sync architecture decision (read it before touching sync).**
 | STT | Deepgram nova-2 (`en-US`/`zh-TW`/`th` by `LANGUAGE`) | cloud |
 | LLM | `LLM_PROVIDER=openrouter` — OpenAI-compatible, so **cloud OR local Ollama** by `OPENROUTER_BASE_URL` (any model via `OPENROUTER_MODEL`); or `weather_chain` (Chinese weather bot) | cloud / local / remote |
 | TTS | **CosyVoice2-0.5B** local streaming (default, on vLLM in WSL, TTFB ~1.1s), or **MOSS-TTS-Realtime** (`TTS_PROVIDER=moss`, `:8003`) | **`:8001` cosy / `:8003` moss, both WSL** |
-| Avatar | **MuseTalk** local mouth-region talking-head (female portrait) | **`:8002`, `musetalk` conda env** |
+| Avatar | **MuseTalk** local mouth-region talking-head (female portrait), **TensorRT render by default** (`MUSETALK_TRT=1`) | **`:8002`, `musetalk` conda env** |
 | Config | **Web config panel** — edit `.env` + restart the pipeline from a browser | **`:7870` (`:8444` over Tailscale)** |
 
 **TTS note:** CosyVoice runs its autoregressive LLM on **vLLM inside WSL Ubuntu**
@@ -92,6 +92,11 @@ during the close") so it survives steady's non-live transport without the audio-
 holds the static neutral portrait between turns — the user's pick. `1` = the synthesized breathing
 loop. Server reads it from the OS env, so `run.ps1` propagates it), `MUSETALK_SIZE` (512 — shrinking
 it does NOT cut MuseTalk compute),
+`MUSETALK_TRT` (**1 = default, load-bearing for A/V sync**: TensorRT UNet+VAE render path,
+per-segment render ~389ms→~255ms so the avatar keeps ~12fps under CosyVoice's shared-GPU
+contention — where the PyTorch path drifts seconds behind the voice on long turns. Engines live in
+`musetalk_server/trt_cache/` (~1.75GB, gitignored, GPU/driver-specific — rebuild with `trt_build.py`);
+any load failure silently falls back to PyTorch. `0` = PyTorch. `docs/PROBLEMS-AND-FIXES.md` P16),
 `MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
 the shared GPU), `CLIENT_JITTER_BUFFER_MS` (raise only for a remote/WAN viewer),

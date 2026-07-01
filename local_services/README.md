@@ -17,6 +17,11 @@ Local models running on the 5060 Ti, for Phase 2/3. Two layers:
 | `cosyvoice_server/` | 8001 | `CosyVoiceTTSService` | ~2 GB |
 | `musetalk_server/`  | 8002 | `MuseTalkVideoService` | ~4–6 GB |
 
+`musetalk_server/` defaults to the **TensorRT** render path (`MUSETALK_TRT=1`, ~1.5× faster — holds A/V
+sync under shared-GPU contention; `docs/PROBLEMS-AND-FIXES.md` P16). Engines (`trt_cache/`, ~1.75 GB,
+gitignored, GPU-specific) are built once with `musetalk_server/trt_build.py`; any load failure falls back
+to PyTorch.
+
 FunASR runs in-process (no server); the first call downloads its weights.
 
 ## Wiring them in (`.env`)

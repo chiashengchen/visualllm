@@ -492,3 +492,34 @@ restart the **whole stack in order**: stop all → start cosyvoice on the near-e
 → then MuseTalk + pipeline via `scripts/run.ps1`. (Alternatively cap vLLM with `max_model_len` so it fits
 second — TTS sequences are short — but the ordered restart is the baseline.) Healthy VRAM with all three
 loaded ≈ **300–400 MB free**. Full detail: `project-visualllm-zh-tts-latency-gpu-contention` memory.
+
+## P16 — Avatar lips drift progressively behind the voice on long turns ✅ FIXED (2026-07-01, TensorRT render is now the baseline)
+
+**Symptom.** On a **long** (multi-sentence) reply the lips fall further and further behind the voice; a
+short reply looks in step. "Frames don't equal the audio" — the delivered video runs seconds longer than
+the audio.
+
+**Root cause (measured live, driving the MuseTalk server with real WAVs at prod fps, offline — no
+CosyVoice/WebRTC).** Two things were conflated:
+- The **rendered lip-frame count** (server `video_clock`) **already equals `audio_sec × fps`** (±1, the P9
+  ceil pad). The lips are NOT missing content and don't finish early.
+- The **extra** frames are the pump's **HELD/duplicate frames** — it repeats the last frame to keep the
+  WebRTC track continuous whenever render dips below fps. They pad the timeline, carrying no new mouth
+  movement.
+
+Per 8-frame segment on the PyTorch path: gpu 259ms + composite ~120ms ≈ **389ms** vs the 667ms real-time
+budget @12fps (~1.7× headroom). So **alone** MuseTalk barely drifts (a fixed +0.36s startup offset at any
+length). The drift only becomes **length-scaling** once the effective render rate drops below fps — which
+happens under **CosyVoice's shared-GPU contention**. Proven with a GPU compute hog (100% util, CosyVoice
+stand-in): PyTorch drifted `+0.37s (2.9s reply) → +1.35s (5.5s) → +3.94s (13.6s)`, render ~9fps. Formula:
+`drift ≈ audio_len × (1 − render_fps/fps)`. So the long-turn drift is contention, **not** the frame math.
+
+**Fix — TensorRT render path, now the default (`MUSETALK_TRT=1`, merged to `main`).** TRT engines replace
+the UNet + VAE-decoder GPU calls (`render_segment`): gpu 259→**168ms**, composite ~120→**78ms**,
+total/seg 389→**~255ms** (~1.5×), lifting headroom 1.7×→**2.6×**. **Under the SAME 100% contention that
+drifted the PyTorch path +3.94s on the 13.6s reply, TRT holds the drift flat at +0.36s at every length**
+(held frames 50→4). Engines are GPU/driver-specific (~1.75GB, gitignored) — build once with
+`local_services/musetalk_server/trt_build.py`; any load failure silently falls back to the proven PyTorch
+path. Next cheap lever (no 2nd GPU): the composite is CPU PIL blending (~31% of render even with TRT) —
+move it to the GPU. Structural fix remains a **dedicated avatar GPU**. Full detail:
+`project-visualllm-musetalk-trt-drift-fix` memory.
