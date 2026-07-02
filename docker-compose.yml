@@ -30,8 +30,7 @@ services:
     environment:
       COSYVOICE_MODEL_DIR: /app/pretrained_models/CosyVoice2-0.5B
       HF_MODEL_ID: FunAudioLLM/CosyVoice2-0.5B
-      USE_VLLM: "1"
-      COSYVOICE_VLLM_GPU_UTIL: "0.5"    # 0.5 × L4 24GB = 12GB for CosyVoice
+      USE_VLLM: "0"    # vllm server is a separate process; use standard PyTorch inference
     deploy:
       resources:
         reservations:
