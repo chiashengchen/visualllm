@@ -1,0 +1,77 @@
+# VisualLLM — speech pipeline (no avatar)
+#
+# Services:
+#   cosyvoice  — CosyVoice2 TTS streaming server (GPU, port 8001)
+#   pipeline   — Pipecat speech pipeline (CPU, port 7860)
+#
+# Usage:
+#   docker compose up               # start everything
+#   docker compose up cosyvoice     # start TTS only
+#   docker compose stop             # stop (keep volumes)
+#   docker compose down -v          # stop + delete weights volume
+#
+# First run downloads ~3GB CosyVoice weights into the cosyvoice-weights volume.
+# Set DEEPGRAM_API_KEY and OPENROUTER_API_KEY in a .env file or environment.
+
+services:
+
+  # ── CosyVoice TTS server ───────────────────────────────────────────────────
+  cosyvoice:
+    build:
+      context: ../CosyVoice
+      dockerfile: Dockerfile.tts
+    image: visualllm/cosyvoice-tts:latest
+    container_name: cosyvoice
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - cosyvoice-weights:/app/pretrained_models
+    environment:
+      COSYVOICE_MODEL_DIR: /app/pretrained_models/CosyVoice2-0.5B
+      HF_MODEL_ID: FunAudioLLM/CosyVoice2-0.5B
+      USE_VLLM: "1"
+      COSYVOICE_VLLM_GPU_UTIL: "0.5"    # 0.5 × L4 24GB = 12GB for CosyVoice
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s    # weight download can take a while on first run
+
+  # ── Pipecat speech pipeline ────────────────────────────────────────────────
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: visualllm/pipeline:latest
+    container_name: pipeline
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      ENABLE_AVATAR: "0"
+      AVATAR_MEMORY: "0"
+      TTS_PROVIDER: cosyvoice
+      COSYVOICE_URL: http://cosyvoice:8001    # service name resolves inside compose network
+      LLM_PROVIDER: openrouter
+      LANGUAGE: zh
+      WEBRTC_ICE_SUBNET: "0"
+      BOT_VAD_STOP_FALLBACK_SECS: "600"
+      # API keys — set in .env file or pass via environment
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash-lite}
+    depends_on:
+      cosyvoice:
+        condition: service_healthy
+
+volumes:
+  cosyvoice-weights:    # persists model weights across restarts
