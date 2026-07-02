@@ -71,7 +71,7 @@ async def run_bot(transport: BaseTransport) -> None:
         await memory.distill_pending()
     llm = build_llm(config, memory)
     tts = build_tts(config)
-    avatar = build_avatar(config)
+    avatar = build_avatar(config) if config.enable_avatar else None
     meter = TtfoMeter(target_s=config.ttfo_target_s)
 
     context = LLMContext([{"role": "system", "content": config.system_prompt}])
@@ -92,17 +92,21 @@ async def run_bot(transport: BaseTransport) -> None:
         logger.info("Echo-guard ON: mic muted while the bot speaks (half-duplex).")
     aggregator = LLMContextAggregatorPair(context, user_params=user_params)
 
-    pipeline = Pipeline([
-        transport.input(),    # mic in (+ VAD set in transport params)
-        stt,                  # speech -> text
-        aggregator.user(),    # add user turn to context
-        llm,                  # text -> streamed text
-        tts,                  # text -> streamed audio
-        avatar,               # audio -> lip-synced video+audio (server)
-        meter,                # measure TTFO
-        transport.output(),   # -> browser (audio + video)
+    stages = [
+        transport.input(),       # mic in (+ VAD set in transport params)
+        stt,                     # speech -> text
+        aggregator.user(),       # add user turn to context
+        llm,                     # text -> streamed text
+        tts,                     # text -> streamed audio
+    ]
+    if avatar is not None:
+        stages.append(avatar)    # audio -> lip-synced video+audio (server)
+    stages += [
+        meter,                   # measure TTFO
+        transport.output(),      # -> browser (audio [+ video if avatar enabled])
         aggregator.assistant(),  # add bot turn to context
-    ])
+    ]
+    pipeline = Pipeline(stages)
 
     _relax_bot_vad_stop_timeout()   # steady-mode screech fix (see the function's docstring)
 
@@ -191,7 +195,7 @@ async def bot(runner_args: RunnerArguments) -> None:
         "webrtc": lambda: TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            video_out_enabled=True,
+            video_out_enabled=config.enable_avatar,
             # See the A/V SYNC MODE note above: non-live so sync_with_audio actually
             # pins each frame to its audio. (is_live would silently disable the sync.)
             video_out_is_live=not sync_av,

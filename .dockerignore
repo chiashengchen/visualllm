@@ -1,0 +1,45 @@
+# Version control
+.git/
+.gitignore
+
+# Windows-specific / local-only
+*.exe
+*.ps1
+*.cs
+scripts/
+archive/
+assets/
+docs/
+tts/
+
+# Local services not needed in container
+local_services/musetalk_server/
+local_services/moss_server/
+local_services/config_panel/
+local_services/musetalk_video.py
+
+# MCP testing server (separate service)
+testing_mcp/
+
+# Runtime / secrets
+.env
+.env.*
+!.env.example
+state/
+logs/
+output/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.tool-versions
+
+# Plans
+.claude/

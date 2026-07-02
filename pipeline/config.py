@@ -117,6 +117,9 @@ class Config:
     deepgram_tts_voice: str = _get("DEEPGRAM_TTS_VOICE", "aura-2-helena-en") or "aura-2-helena-en"
 
     # --- Avatar (local MuseTalk talking-head server on port 8002) ---
+    # ENABLE_AVATAR=0 disables the avatar stage entirely (pure audio pipeline, no video out).
+    # Useful in containerized/cloud deployments where the GPU avatar server isn't available.
+    enable_avatar: bool = (_get("ENABLE_AVATAR", "1") or "1").lower() in ("1", "true", "yes", "on")
     avatar_url: str = _get("AVATAR_URL", "http://localhost:8002")
 
     @property
