@@ -117,7 +117,15 @@ it does NOT reduce A/V drift** (TRT already holds render ≥12fps, even under 10
 is reserve headroom + a freed CPU, judged by the live call. `docs/PROBLEMS-AND-FIXES.md` P17),
 `MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
-the shared GPU), `CLIENT_JITTER_BUFFER_MS` (raise only for a remote/WAN viewer),
+the shared GPU), `COSYVOICE_FIRST_PIECE` (**1 = default, TTFO win**: emit a short opening CLAUSE to
+TTS first, then normal sentences. CosyVoice's first-chunk TTFB scales with the INPUT sentence length
+— it prefills the whole sentence before the first audio token, so a 16-word opener costs ~3.0s vs
+~1.7s short. Splitting cut TTS first-chunk ~3.0s→~1.7s and **TTFO ~4.6s→~3.2s**, flow stays smooth
+(delivered audio gap ~55ms, never a stall). `COSYVOICE_FIRST_PIECE_MIN_CHARS`/`_MAX_CHARS`
+(**18/32** = tuned sweet spot: use an early comma if present, else cap at ~32 chars on a word
+boundary — enough opening audio to cover the next piece's synthesis even under shared-GPU
+contention; smaller MAX = faster start but risks a between-clause pause). `0` = off.
+`local_services/first_piece_aggregator.py`), `CLIENT_JITTER_BUFFER_MS` (raise only for a remote/WAN viewer),
 `WEBRTC_VIDEO_BITRATE_MAX` (caps aiortc's VP8 ceiling so the video fits a WAN link), and
 `WEBRTC_ICE_SUBNET` (**`100.64.0.0/10`** = pin WebRTC ICE to the Tailscale interface; fixes the
 intermittent remote mic — `0` disables). **Full reference: `WORKFLOW.md` §8.**

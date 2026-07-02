@@ -48,6 +48,23 @@ class CosyVoiceTTSService(TTSService):
         self._voice = voice
         self._session: aiohttp.ClientSession | None = None
 
+        # TTFO knob: emit a short opening clause first so the bot starts speaking ~0.8s
+        # sooner (CosyVoice's first-chunk latency scales with input sentence length).
+        # OFF by default; see local_services/first_piece_aggregator.py for the why + tuning.
+        import os
+        if os.getenv("COSYVOICE_FIRST_PIECE", "0").lower() in ("1", "true", "yes", "on"):
+            from local_services.first_piece_aggregator import FirstClauseAggregator
+
+            self._text_aggregator = FirstClauseAggregator(
+                min_chars=int(os.getenv("COSYVOICE_FIRST_PIECE_MIN_CHARS", "24") or "24"),
+                max_chars=int(os.getenv("COSYVOICE_FIRST_PIECE_MAX_CHARS", "60") or "60"),
+                aggregation_type=self._text_aggregator.aggregation_type,
+            )
+            logger.info(
+                "CosyVoice first-clause early-flush ON "
+                f"(min={self._text_aggregator._min_chars}, max={self._text_aggregator._max_chars})"
+            )
+
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()

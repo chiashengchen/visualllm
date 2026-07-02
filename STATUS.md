@@ -3,7 +3,8 @@
 _Last updated: 2026-07-02 (**Chinese TTS fixed**: the broken/"halting" zh voice was CosyVoice-on-vLLM
 losing its repetition guard — restored RAS in the vLLM sampler; and swapped the zh reference to a naturally
 fluid "pro" voice so zh is now as smooth as English. See the 2026-07-02 session below. Avatar baseline
-unchanged: TensorRT `MUSETALK_TRT=1`, LLM cloud gemini-2.5-flash-lite.)_
+unchanged: TensorRT `MUSETALK_TRT=1`, LLM cloud gemini-2.5-flash-lite. **Also 2026-07-02: TTFO ~4.6s→~3.2s**
+via the first-clause TTS split — `COSYVOICE_FIRST_PIECE=1`, now baseline.)_
 
 > **⭐ Baseline (2026-07-02) — the known-good config to return to:**
 > **Avatar:** `MUSETALK_TRT=1` (TensorRT render, merged to `main`), `MUSETALK_GPU_COMPOSITE=1` (GPU per-frame
@@ -19,6 +20,11 @@ unchanged: TensorRT `MUSETALK_TRT=1`, LLM cloud gemini-2.5-flash-lite.)_
 > (`CosyVoice/asset/pro_ref.wav`, the default in `tts_engine.py`) — naturally fluid zh (~1 pause/sentence,
 > ~64% voiced ≈ English). The zh pause-trimmer is OFF by default (`COSYVOICE_SILENCE_CAP_S=0`; not needed with
 > the pro voice). One-click: **`Run VisualLLm.exe`**.
+> **TTFO (2026-07-02):** `COSYVOICE_FIRST_PIECE=1` (MIN=18/MAX=32) — emit a short opening clause to TTS
+> first, then normal sentences. CosyVoice's first-chunk TTFB scales with the input sentence length, so the
+> LLM's long opener was the biggest TTFO cost; splitting cut TTS first-chunk ~3.0s→~1.7s and **TTFO
+> ~4.6s→~3.2s** with smooth flow (delivered audio gap ~55ms, never a stall). Code:
+> `local_services/first_piece_aggregator.py` (gated; `=0` reverts to plain sentence aggregation).
 
 ## ⭐ Session 2026-07-02: Chinese TTS fixed (RAS restored + fluid "pro" voice)
 
