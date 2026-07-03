@@ -6,7 +6,7 @@ what `INSTALL.md` defers to other files — the **WSL2 + vLLM** TTS build, the *
 conda env + weights**, and the **conda SSL gotcha** — so nothing is "see elsewhere".
 
 ```
-speech → STT → LLM → TTS → lip-sync avatar → audio + video out      (goal: TTFO < 8 s)
+speech → STT → LLM → TTS → lip-sync avatar → audio + video out      (goal: TTFO < 3 s)
 ```
 
 > Source-of-truth docs: `STATUS.md` (live state), `WORKFLOW.md` §8 (full `.env`),
@@ -192,7 +192,7 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8001
 Then in `.env`: `COSYVOICE_URL=http://localhost:8001`.
 
 > **Drawback:** first-audio TTFB ~3.4 s vs ~1.1 s (≈3× slower), so the avatar's lips
-> visibly lag at turn start and the <8 s goal has far less headroom. WSL2 is the *only*
+> visibly lag at turn start and the <3 s goal has far less headroom. WSL2 is the *only*
 > thing Path A needs that Path B doesn't.
 
 ---
@@ -347,7 +347,7 @@ appear**, then talk.
 ## 9. Verify it works
 
 - `python -m scripts.preflight` — every import resolves; stages flip `KEYS` → `PASS` once keys set.
-- Each turn logs a **`[TTFO]`** line (time-to-first-output). **Pass = p95 < 8 s** (printed on disconnect).
+- Each turn logs a **`[TTFO]`** line (time-to-first-output). **Pass = p95 < 3 s** (printed on disconnect).
 - Headless A/V timeline + metrics (no browser): `python -m scripts.measure --offline-capture`.
 
 ---

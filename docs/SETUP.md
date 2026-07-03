@@ -12,7 +12,7 @@
 
 We use a **dedicated streaming provider for each stage** (not an aggregator like
 fal.ai), because streaming providers give the lowest latency — which is what the
-<8 s time-to-first-output goal needs. You buy four services; each owns one box in
+<3 s time-to-first-output goal needs. You buy four services; each owns one box in
 the pipeline.
 
 ```

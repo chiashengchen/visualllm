@@ -213,7 +213,7 @@ def build_events(turn):
                    why="STT's input is the live mic the whole time the user talks; partials refine into one final transcript.",
                    src="log STT stream"))
     ev.append(dict(stage="capture", t=0, kind="turn", label="User STOPPED speaking - t0",
-                   why="VAD + turn-analyzer agree the turn ended. This instant starts the <8s TTFO stopwatch.",
+                   why="VAD + turn-analyzer agree the turn ended. This instant starts the <3s TTFO stopwatch.",
                    src="log user-turn-stopped"))
     ev.append(dict(stage="stt", t=0, kind="emit", label="STT emits final transcript",
                    why=(f"\"{turn['question']}\" " if turn["question"] else "") + "pushed into the LLM context aggregator.",
@@ -264,7 +264,7 @@ def build_events(turn):
                    src="~ TTS first chunk"))
     ev.append(dict(stage="deliver", t=bs, kind="turn", big=True, label=f"Bot started speaking -> TTFO {turn['ttfo_s']}s",
                    why="The VOICE starts reaching the client here - audio is forwarded immediately WITHOUT waiting for a rendered frame. "
-                       f"TTFO measures this audio start: {turn['ttfo_s']}s vs the 8s target. Lip-synced video is rendered best-effort (decoupled).",
+                       f"TTFO measures this audio start: {turn['ttfo_s']}s vs the 3s target. Lip-synced video is rendered best-effort (decoupled).",
                    src="log [TTFO] (audio-path event)"))
     ev.append(dict(stage="avatar", t=bs, end=bstop, kind="span", label="MuseTalk lip-sync render",
                    why="Mouth-region frames, live/audio-master sync: the voice is forwarded immediately so it can never freeze; lips track best-effort on the shared GPU.",
@@ -296,7 +296,7 @@ def build_metrics(turn, pm, offline_lip):
     def tag(cond_ok, cond_warn=False):
         return "ok" if cond_ok else ("warn" if cond_warn else "bad")
     M = []
-    M.append(dict(k="TTFO", v=str(turn["ttfo_s"]), u="s", n="target 8s",
+    M.append(dict(k="TTFO", v=str(turn["ttfo_s"]), u="s", n="target 3s",
                   tag="ok" if turn["ttfo_pass"] else "bad"))
     if "startup_s" in pm:
         M.append(dict(k="Startup (connect -> 1st frame)", v=str(pm["startup_s"]), u="s", n="incl. idle warmup", tag=""))
@@ -441,7 +441,7 @@ async def main(args):
             "question": turn["question"],
             "machine": args.machine,
             "stack": args.stack,
-            "ttfo": turn["ttfo_s"], "ttfo_target": 8.0, "ttfo_pass": turn["ttfo_pass"],
+            "ttfo": turn["ttfo_s"], "ttfo_target": 3.0, "ttfo_pass": turn["ttfo_pass"],
         },
         "events": build_events(turn),
         "handoffs": build_handoffs(turn),

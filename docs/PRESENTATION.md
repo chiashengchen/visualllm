@@ -25,7 +25,7 @@ Updated: **2026-06-14**
 A conversational AI avatar that **listens, thinks, and speaks back with a
 photoreal lip-synced face** — in real time, end-to-end streaming.
 
-- Acceptance target: **time-to-first-output (TTFO) < 8 s**
+- Acceptance target: **time-to-first-output (TTFO) < 3 s**
 - Research target language: **Mandarin (zh-TW)** (English prototype first)
 - Runs from a remote Windows PC in **Thailand** (the latency challenge)
 
@@ -43,7 +43,7 @@ machine sits in **Thailand** while most cloud AI services live in the **US** —
 every cloud hop crosses the Pacific.
 
 **The bar we set:** from the moment the user *stops speaking* to the moment the
-avatar *starts speaking* — the **TTFO** — must stay **under 8 seconds** to feel
+avatar *starts speaking* — the **TTFO** — must stay **under 3 seconds** to feel
 conversational.
 
 ---
@@ -100,7 +100,7 @@ Every stage is **swappable from a config file** — see §7.
 
 ## 4. Per-process delays
 
-The **delay budget** is 8 s. Here is where the time goes per turn. Hard
+The **delay budget** is 3 s. Here is where the time goes per turn. Hard
 **measured** figures are bold; the rest are **estimated** but independently
 reproducible with `scripts/bench_latency.py`.
 
@@ -115,7 +115,7 @@ reproducible with `scripts/bench_latency.py`.
 | **End-to-end TTFO** | **user stops → avatar speaks** | **median 1.97 s · p95 2.86 s** | **measured** |
 
 > **Headline result: TTFO median 1.97 s, p95 2.86 s — comfortably inside the
-> 8 s budget** (Phase-1 stack, English).
+> 3 s budget** (Phase-1 stack, English).
 
 *Sources: `pipeline/stages/vad.py` (0.5 s), `pipeline/metrics.py` + STATUS.md
 (TTFO), `local_services/musetalk_server/app.py` (20 fps / 32 ms), STATUS.md

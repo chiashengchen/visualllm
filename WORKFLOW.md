@@ -3,7 +3,7 @@
 A real-time **speech → STT → LLM → TTS → talking-head avatar** system.
 You talk, it transcribes you, an LLM answers, the answer is spoken, and a GPU renders a
 lip-synced face — all streaming end-to-end over WebRTC to a browser. Target:
-time-to-first-output (TTFO) **< 8 s**.
+time-to-first-output (TTFO) **< 3 s**.
 
 > This document is the *how it works* companion to `STATUS.md` (current state / decisions)
 > and `CLAUDE.md` (repo conventions). When in doubt about live state, `STATUS.md` wins.
@@ -58,7 +58,7 @@ mic → transport.input() (+ Silero VAD)
 
 **It all streams.** The LLM's *first sentence* reaches TTS before the full answer is
 generated, and TTS's *first audio chunk* reaches the avatar immediately. That overlap is
-what keeps the whole thing inside the < 8 s budget.
+what keeps the whole thing inside the < 3 s budget.
 
 `TtfoMeter` (`pipeline/metrics.py`) logs `[TTFO]` per turn — the gap from
 `UserStoppedSpeakingFrame` to `BotStartedSpeakingFrame`.
@@ -122,7 +122,7 @@ transport. It:
 `local_services/musetalk_server/app.py` (FastAPI websocket). See §4.
 
 ### TtfoMeter
-`pipeline/metrics.py`. Pure measurement — logs the < 8 s metric per turn and a summary on
+`pipeline/metrics.py`. Pure measurement — logs the < 3 s metric per turn and a summary on
 disconnect.
 
 ---
@@ -296,7 +296,7 @@ in order of effectiveness:
 | `WEBRTC_ICE_SUBNET` | `100.64.0.0/10` | pin WebRTC ICE host candidates to the Tailscale interface (fixes the intermittent remote mic); `0` = advertise all |
 | `CLIENT_JITTER_BUFFER_MS` | `400` | receive-side WebRTC jitter buffer (0 = off); raise for a remote viewer |
 | `WEBRTC_VIDEO_BITRATE_MAX` | `600000` | VP8 send-bitrate ceiling, bits/s (0 = aiortc default 1.5M) |
-| `TTFO_TARGET_SECONDS` | `8` | the < 8 s target for logging |
+| `TTFO_TARGET_SECONDS` | `3` | the < 3 s target for logging |
 
 Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY` +
 `ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`). With `LLM_PROVIDER=weather_chain`
@@ -322,7 +322,7 @@ TTS/avatar servers are managed separately (the status dots tell you if the provi
 | `pipeline/main.py` | Pipeline assembly, transport params, greeting, A/V-sync coupling, the screech fix + the three remote-WebRTC fixes |
 | `pipeline/config.py` | All `.env`-driven config + system prompts |
 | `pipeline/stages/*.py` | Per-stage single-provider factories (vad/stt/llm/tts/avatar) |
-| `pipeline/metrics.py` | `TtfoMeter` (the < 8 s metric) |
+| `pipeline/metrics.py` | `TtfoMeter` (the < 3 s metric) |
 | `local_services/musetalk_video.py` | Client-side avatar processor + frame-clocked A/V sync + `_align_even` |
 | `local_services/musetalk_server/app.py` | MuseTalk GPU server (ws, frame pump, sync markers, session guard) |
 | `local_services/cosyvoice_tts.py` | CosyVoice streaming TTS client (reused by `TTS_PROVIDER=moss`) |

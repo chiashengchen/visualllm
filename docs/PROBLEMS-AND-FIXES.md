@@ -619,3 +619,279 @@ and is fine at zh.
 `tts_engine.py` (pro voice defaults + the off-by-default squeeze). **Not yet git-committed.** Baseline knobs:
 `COSYVOICE_RAS_WIN` (10), `COSYVOICE_PROMPT_WAV`/`COSYVOICE_PROMPT_TEXT` (pro voice), `COSYVOICE_SILENCE_CAP_S`
 (0 = off). **Still open:** human A/V confirmation on a live call; git-commit both repos.
+
+## P19 — TTFO tuning sweep: `COSYVOICE_FIRST_HOP` × `MUSETALK_LEAD_FRAMES` ⚠️ NO WIN — baseline `hop=0, lead=14` stands (2026-07-03)
+
+**Goal.** Find a `first_hop` (and later, jointly, a `LEAD_FRAMES`) value that lowers TTFO **without** degrading
+the avatar. Ended with a **negative result**: every candidate that lowered TTFO either got erased live or
+introduced choppiness the objective metrics initially missed but the human eye caught. The baseline
+(`hop=0`, `lead=14`) is already correct. This entry records the method + all data so it is not re-litigated.
+
+**Two knobs, precisely (read the code, not the memory):**
+- `COSYVOICE_FIRST_HOP` (`CosyVoice/cosyvoice/cli/model.py:391`, per-language via `tts_engine.py::_apply_first_hop`):
+  the FIRST streaming chunk normally waits `token_hop_len=25` speech tokens (~1s audio) before emitting. `hop<25`
+  emits after fewer tokens = a **smaller opening chunk** → lower isolated TTFB but less opening audio. `0`=off=25.
+- `MUSETALK_LEAD_FRAMES` (`musetalk_server/app.py:685,729`): the pump **holds the last frame and won't release the
+  synced voice until `lead_frames` rendered frames are queued** (`out_q.qsize() >= lead_frames`). It IS the
+  synced-start delay, and it is a **mid-turn shock absorber** — the cushion drains on a render dip instead of the
+  queue hitting empty (which in steady = a voice pause/stutter).
+
+**Method (how the sweep ran cheaply + correctly).** Live-settable debug endpoints avoided restart-per-value:
+`GET /debug/hop?en=&zh=` on the cosy server (hop is read per-request) and `GET /debug/lead?n=` on the MuseTalk
+server (lead is read per websocket connection → a fresh pipeline connect picks it up). **Both are TEMPORARY and
+were reverted** (source `git`-clean; they linger only in a running process until its next restart). TTFO was
+decomposed into **LLM-independent** parts to beat the OpenRouter cloud-hop variance (0.8–7.3s): `raw_TTS` =
+`tts→avatar − llm→tts` (the hop effect) and `delay` = `TTFO − tts→avatar` (the lead effect). Choppiness was
+measured **server-side** (see the metric note at the end) — the reliable signal.
+
+**Data 1 — isolated TTFB, CosyVoice alone, no avatar (n=6, tight).** GOTCHA: read the stream with a **small**
+buffer (`read(1024)`); a 64KB `read()` blocks accumulating multiple chunks and *inflates/masks* TTFB (a first
+noisy pass wrongly showed hop=0 as fastest). True TTFB **saturates by hop≈3** for both languages:
+
+| hop | en TTFB | zh TTFB |   | hop | en TTFB | zh TTFB |
+|-----|---------|---------|---|-----|---------|---------|
+| 0(=25) | 2.62s | 3.04s | | 5 | 1.89s | 2.02s |
+| 1 | 1.82s | 1.83s | | 10 | 1.90s | 2.00s |
+| 3 | 1.86s | 1.84s | | | | |
+
+**Data 2 — the isolated win INVERTS live (full stack, steady, at the default `lead=14`).** A smaller opening
+chunk fills the `lead=14` cushion slower → the synced voice-start is *delayed*, and hop's extra small vocoder
+bursts contend with MuseTalk on the shared GPU (erasing even the raw-TTS gain live):
+
+| hop @ lead14 | en live TTFO | zh live TTFO | note |
+|-----|------|------|------|
+| 0 | ~3.6s ✅ | ~3.68s ✅ | biggest opening chunk |
+| 3 | 4.42s | 4.22s | starved start |
+| 5 | ~4.0s | ~5.78s | worse; zh render freeze 162–202ms |
+
+**Data 3 — high hop (<25) at `lead=14` is a plateau+cliff, not a slope.** hop 15–22 return to ~hop=0 behavior
+(the chunk is still big enough to fill the cushion); only hop≤10 starve. hop=20 TTFO ~3.42s ≈ hop=0 ~3.57s — a
+tie within noise, never a real win, and nearer the starvation cliff.
+
+**Data 4 — the 24-cell grid `hop{0,2,5,10} × lead{14,10,8,6,4,2}` (LLM-independent).** The starvation is a
+**`lead=14` artifact**: at low hop the small chunk can't fill a *big* cushion. Synced-start `delay` has a **cliff
+between lead 10 and 8** — at lead≤8 the delay collapses to ~0.4–0.6s for EVERY hop:
+
+```
+delay(hop,lead):     lead=14  10    8     6     4     2
+  hop=0 (big chunk)    0.79  0.74  0.52  0.55  0.34  0.50   <- big chunk: low delay at any lead
+  hop=2                2.05  1.85  0.46  0.37  0.42  0.56   <- CLIFF between lead 10 and 8
+  hop=5                1.82  1.82  0.61  0.48  0.44  0.59
+  hop=10               1.58  2.70  0.61  0.63  0.38  0.56
+```
+
+**Data 5 — verified candidates, n=4 (COMBINED = raw_TTS + delay, LLM-independent).** The low-hop+low-lead corner
+beats baseline by ~0.6–0.9s on *latency*:
+
+| cell | COMBINED | freeze | vs baseline |
+|------|----------|--------|-------------|
+| baseline hop0/lead14 | 2.89 | 110–154ms | — |
+| hop5/lead6 | 2.05 | 106–113ms | −0.84s |
+| hop2/lead4 | 1.98 | 106–**171ms** | −0.91s |
+| hop0/lead6 | 2.27 | 108–112ms | −0.62s |
+
+**Data 6 — offline contention validation (13.6s reply, `_drive_frames` + `_gpu_contention_hog.py` N=4096, 100%
+GPU).** `lead=6` == `lead=14`: 162 rendered, 4 held, +0.357s drift, 11.8fps — **no underflow.** This PASSED but
+was **MISLEADING**: a *steady* matmul hog does not replicate CosyVoice's *bursty* vocoder contention, and this
+test had no CosyVoice at all.
+
+**Data 7 — the DECIDING test: live choppiness, server-side `[chop]` held% (n=4).** Only the **combination**
+`hop=5 + lead=6` is choppy; either knob alone is baseline-smooth:
+
+| config | held% (smooth ≈17%) | verdict |
+|--------|--------------------|---------|
+| baseline hop0/lead14 | 17.6 [14–20] | smooth (reference) |
+| **hop5/lead6** | **36.5 [35–37]** | **CHOPPY** (matches the human eye) |
+| hop0/lead6 | 17.2 [17–21] | smooth |
+| hop5/lead14 | 16.9 [14–18] | smooth |
+| hop0/lead10 | 17.3 [15–20] | smooth |
+
+**The mechanism (why the combo is choppy, and why my offline validation missed it).** `hop=5` makes CosyVoice
+emit **more, smaller** vocoder bursts (extra shared-GPU contention spikes during the turn); `lead=6` is a **thin
+cushion**. Either alone survives — a big cushion absorbs the bursts, OR big chunks (hop=0) don't create the
+bursts so a thin cushion suffices. **Together**: bursts + thin cushion → mid-turn render underflow → held frames
+→ choppy. Data 6 missed it because the steady hog isn't bursty and ran without CosyVoice.
+
+**Live A/V verdict (human).** `hop=5,lead=6` → user: **"choppy."** Confirmed by Data 7. Retesting `lead=14`
+surfaced a *separate* symptom — **"avatar starts before the voice."** The log shows why and that it is NORMAL
+steady behavior (present at clean baseline): audio arrives ~2s **ahead** of video (`[musetalk sync] hold=2.07s,
+audio 4.2s, video 2.2s, vbuf=0`) and steady is **video-master**, so it **holds the voice** waiting for the
+render — when the render lags, the avatar's frames play while the voice is withheld → lips-first. **The lever
+for lips-first is `MUSETALK_SYNC_MODE` (steady↔live), NOT hop/lead.** `live` = voice instant, lips trail ~0.75s.
+
+**Conclusion — ship nothing; baseline `hop=0, lead=14` stands.** Every TTFO "win" came from starting the voice
+sooner, which in steady = shrinking the hold/cushion that keeps lips and voice together. The isolated hop TTFB
+gain is real but erased live (synced-start fill + shared-GPU contention). **This UPDATES P15**: the "low hop
+starves the avatar" finding was specifically a `lead=14` artifact (small chunk vs big cushion) — but lowering
+the cushion to recover it re-introduces choppiness via bursty contention, so P15's practical verdict (don't ship
+hop) is unchanged, with a cleaner mechanism. A genuine TTFO win still needs a **dedicated avatar GPU**, not a
+settings tweak.
+
+**Measurement lessons (load-bearing for the next tuning attempt).**
+- **Choppiness must be measured server-side.** The pump *knows* when it holds a frame (`out_q` empty while
+  `playing` = a real render underflow) vs a real/idle frame. A temporary counter there (`held_playing`, logged
+  as `[chop] held%` at `video_end`) cleanly separated smooth (17%) from choppy (36%).
+- **What did NOT work:** (a) WebRTC received-frame duplicate detection — VP8 lossy decode blurs "exact duplicate"
+  and natural inter-sentence mouth-stillness looks identical to an underflow freeze; (b) `freeze_ms` (max single
+  gap) — too coarse, misses sustained low-grade micro-stutter; (c) offline steady-hog validation — not bursty,
+  no CosyVoice.
+- **Always A/B on the LIVE full stack (real CosyVoice contention), and let the human eye be the final gate** —
+  it caught choppiness the first (offline) validation certified as safe.
+
+**Files.** All temporary instrumentation reverted (both `/debug` endpoints + the `[chop]` counter);
+`local_services/musetalk_server/app.py` `git`-clean. No config change shipped. `.env` unchanged
+(`COSYVOICE_FIRST_HOP` unset/0, `MUSETALK_LEAD_FRAMES=14`). Full record: this entry +
+`project-visualllm-ttfo-first-clause-split` memory.
+
+## P20 — FP8 quantization of the render UNet ⚠️ DEAD END (2026-07-03, proven; sm_120 has no FP8-conv kernels). Handoff: Lever 1 (GPU priority) + Lever 3 (stagger)
+
+**Goal.** Fix the "some turns the avatar's mouth moves before the voice" symptom at its root. Root cause (same
+shared-GPU wall as P15/P16/P19): the ONE 16GB card runs CosyVoice (TTS gen, in WSL) + MuseTalk (render,
+Windows); at **turn start** CosyVoice's opening vocoder burst and MuseTalk's **first** render segment collide,
+the render loses GPU time → in `steady` (video-master) the voice is held while the already-rendered lip frames
+show → "avatar before voice". TRT's mid-turn headroom does NOT cover the *first-frame* render (P15). "Lever 2a"
+= shrink the UNet's GPU cost with FP8 so the starved first segment finishes sooner.
+
+**Result = REJECTED. Quality perfect, 4.5x SLOWER.** modelopt FP8 PTQ of the UNet: **SSIM 0.99997 vs fp16**
+(max pixel diff ≤17/255 — the quantization MATH is correct), but **fp16 44.4ms → fp8 200.5ms per UNet batch**.
+The engine built but ran ~4.5x slower because TensorRT could not compile FP8 kernels and silently fell back to
+running the Q/DQ as pure overhead on fp16.
+
+**Root cause of the slowness (proven, not guessed): TensorRT 10.13.3.9 has no FP8-convolution kernels for
+Blackwell sm_120.** Build log: **82 skipped FP8 tactics + 30 `NVRTC Compilation failure` /
+"No matching rules found for input operand types"** on the Conv/MatMul weight `QuantizeLinear` nodes (Myelin
+codegen `nvrtc_compile.cpp` CHECK failure = the compiler literally cannot generate FP8 conv code for this
+arch). **Ruled out the competing "scale format" hypothesis with a decisive tiebreaker:** modelopt's ONNX FP8
+path hardcodes `per_channel=True` (fp8.py:302; it does INT8 PTQ then int8→fp8, inheriting per-channel weight
+scales → `f16[320]` vectors), and NVIDIA's forum says TRT FP8-conv wants **per-tensor**. Monkey-patched
+`quantize_static(per_channel=False)` (`trt_quant_fp8.py --per-tensor`) → the scale became a scalar `f16[]`
+(format now exactly what TRT wants) but the failure was **byte-identical (same 82 skipped + 30 NVRTC + 4.5x
+slower)**. So per-channel was a RED HERRING; it's purely the sm_120 kernel gap. Corroborated: NVIDIA/TensorRT
+issue #4715 (documented sm_120 Myelin kernel-library gaps; even TRT 10.13.3 "fails to init on sm_120 with a
+different error"), and the "FP8 conv tactics not used" forum thread (finicky even on Hopper sm_90 where support
+is mature). **No scale-format or code change on our side can fix it — retry only after a newer TensorRT ships
+sm_120 FP8-conv kernels, then rerun `trt_quant_fp8.py --per-tensor`.**
+
+**Toolchain notes (reuse when FP8 is retried):** use modelopt's **ONNX PTQ** (`modelopt.onnx.quantization.quantize`,
+`quantize_mode="fp8"`), NOT torch-quant + `torch.onnx.export` (torch 2.11's TorchScript FP8 symbolic chokes:
+`amax` comes through as a graph Param; `export_torch_mode` + opset tweaks don't fix it). ONNX PTQ works on the
+existing fp16 `unet.onnx`. GOTCHAS: (1) pass `calibration_method="max"` — the default `entropy`/histogram is
+the slow INT8 method (ran >1hr on 876 tensors before I killed it; `max` = one pass, ~5-8min total). (2) the
+`CalibrationDataReader` needs `get_next` AND `get_first`. (3) `calibration_eps=["cuda:0"]` (onnxruntime-gpu).
+Script: `local_services/musetalk_server/trt_quant_fp8.py` (calibrates on the real reply `output/_mic_drive.wav`,
+builds `unet_fp8.engine`, validates SSIM + per-batch GPU time vs the fp16 engine).
+
+**Env damage + repair (the modelopt install is riskier than pip's dry-run shows):** `pip install
+nvidia-modelopt[onnx]` into the `musetalk` env silently upgraded **numpy 1.26.4 → 2.2.6** (pulled by
+`cupy-cuda12x`), which **broke cv2 + face_alignment** (`_ARRAY_API not found`) — the server would crash on
+restart. Repaired mid-session (uninstall cupy + pin numpy). After FP8 was ruled out, the env was **fully
+rolled back** to `logs/_env_snapshot_pre_fp8.txt` (24 added pkgs uninstalled, onnx restored 1.21→1.22) —
+verified **bit-identical** to the snapshot, all imports clean. **Take a pip-freeze snapshot before any future
+modelopt install.** Original fp16 `unet.engine` (06-30) never touched; dead `unet_fp8.*` deleted.
+
+**Live measurement (`scripts.measure`, system python, real driven turn) — the shared-GPU wall, quantified:**
+an 11s reply rendered at a sustained **12.1fps** but the video ran **~2.7s behind the voice all turn**
+(`[musetalk sync] hold=2.71s`, `[avatar timing] lips start +2.88s after voice`). This **contradicts P16's
+offline "TRT holds drift flat at +0.36s"** — that was measured WITHOUT CosyVoice; under real (bursty) CosyVoice
+contention the turn-start hold is ~2.7s. Confirms (again, per P19) that this cost only appears on the LIVE full
+stack.
+
+**HANDOFF — two untried non-hardware levers (both directly attack the turn-start GPU collision):**
+
+- **Lever 1 — GPU stream PRIORITY (let the render cut the line).** Mark MuseTalk's render as a high-priority
+  CUDA stream so its kernels preempt CosyVoice's during the collision; the avatar holds ≥12fps, CosyVoice
+  finishes a few ms later (RTF<1, huge slack). **Impl:** `musetalk_server/app.py` / `trt_runtime.py` — run
+  `render_segment` under `hp = torch.cuda.Stream(priority=torch.cuda.Stream.priority_range()[0])` (most
+  negative = highest), `with torch.cuda.stream(hp):` around the render so `trt_runtime`'s
+  `torch.cuda.current_stream()` (feeds `execute_async_v3`) uses it, then `hp.synchronize()`. **Honest caveat =
+  the whole risk:** CosyVoice (WSL) and MuseTalk (Windows) are separate GPU processes under the Windows **WDDM**
+  scheduler, which does NOT strongly honor cross-process stream priority (CUDA MPS would, but is Linux-only, not
+  on Windows). **Cheap to test, uncertain to bite across the WSL/Windows boundary** — measure live `hold=` /
+  `lips start +Xs` before vs after; if unchanged, WDDM ignored it and this lever is dead.
+
+- **Lever 3 — STAGGER the two bursts.** They collide only because both peak at the same instant; CosyVoice's
+  burst is short + front-loaded. **(a) [preferred, lower risk]** throttle CosyVoice's generation nearer
+  real-time at turn start so it stops front-loading the GPU — lever on `COSYVOICE_PACE_RATE` (currently 1.3, in
+  the cosyvoice repo server), maybe a dedicated turn-start throttle, to leave the avatar's first render room; no
+  sync surgery. **(b)** on `musetalk_video.py`, delay feeding the FIRST render segment ~150–250ms so CosyVoice's
+  opening burst clears first (trade: adds that fixed delay to lip-start). Watch TTS TTFO doesn't cross the 8s
+  target.
+
+  **Measurement protocol for BOTH (don't repeat P19's offline-hog mistake):** A/B on the LIVE full stack with
+  real CosyVoice — `python -m scripts.measure --mic output/q_long.wav` — read `[musetalk sync] hold=` +
+  `[avatar timing] lips start +Xs` from `logs/pipeline.log`; human eye is the final gate; ship only if it cuts
+  the live hold AND stays smooth. **Fallbacks if both fail:** INT8 quant (INT8-conv kernels DO exist on sm_120 —
+  the honest FP8 redo, quality gamble); a turn-start "about-to-speak" gesture to MASK the lag (low risk,
+  reuses `MUSETALK_IDLE_MOTION`); `MUSETALK_SYNC_MODE=live` (voice always first, lips trail ~0.75s — direct
+  symptom cure, previously rejected); or the structural fix, a **dedicated avatar GPU** (the only guaranteed
+  one; avatar working set ~5GB). Full record: `project-visualllm-fp8-quantization-deadend` memory + STATUS.md
+  3rd-session block.
+
+---
+
+## P21 — LLM cloud hop was the dominant TTFO cost + all its variance ✅ IMPROVED (2026-07-03, pin OpenRouter to Groq)
+
+**Symptom.** TTFO occasionally spiked to ~7–8s (both languages) for no visible reason; even typical turns
+carried a 1–2.5s "nothing happening" gap before the voice. P19 left this as the deferred open item ("LLM
+cloud-hop variance 0.8–7.3s now dominates worst-case").
+
+**Diagnosis (measured, `scripts.measure`, 5×/lang, steady).** The full TTFO budget, median:
+- **en:** LLM 1.07s + TTS 1.88s + steady-hold 0.78s = ~3.95s
+- **zh:** LLM 1.64s + TTS 1.72s + steady-hold 2.03s = ~5.16s
+
+STT folds to ~0 (Deepgram final is ready when the VAD declares stop). The LLM is **pre-warmed on connect**, so
+the measured LLM hop is *pure cloud TTFB* — no cold start. It was the single largest component **and** its
+whole variance/tail: same Gemini model gave 0.63s, 1.06s, 1.40s, 3.52s in one session — a transpacific
+`OpenRouter → Google Gemini` round-trip from Thailand. VAD `stop_secs=0.5` is *before* the TTFO clock
+(`metrics.py` starts at `UserStoppedSpeaking`), so it's perceived latency, not in the number.
+
+**Fix — pin OpenRouter to Groq's backend (config-shaped, ~5 lines, no new key).** `build_chat_completion_params`
+ends with `params.update(settings.extra)`, and the OpenAI SDK forwards an `extra_body` kwarg into the request
+JSON — exactly where OpenRouter reads its `provider` hint. So:
+- `pipeline/config.py`: new `openrouter_provider_only` field (env **`OPENROUTER_PROVIDER_ONLY`**).
+- `pipeline/stages/llm.py`: if set, `Settings(model=…, extra={"extra_body": {"provider": {"only": [...]}}})`.
+  Empty = today's unpinned Gemini (safe default).
+- `.env`: `OPENROUTER_MODEL=meta-llama/llama-4-scout` + `OPENROUTER_PROVIDER_ONLY=Groq`.
+Reuses the existing OpenRouter key; fully revertible. (Verify the model is Groq-served on OpenRouter first —
+Qwen-2.5-72b 404s on Groq. `OPENROUTER_PROVIDER_ONLY` is NOT in the config-panel `_KNOWN` set, so edit `.env`
+directly, not via /save.)
+
+**Result (measured).** LLM hop **halved + tail killed**: zh 1.64→**0.80s** median (max 3.59→1.44); en
+1.07→**0.67s** (max 2.43→1.35). Isolated probe: Groq TTFT ~0.67–0.91s tight vs Gemini 1.1–1.6s + 3.6s tail.
+zh Traditional-Chinese quality holds (natural; one rare simplified-char slip, inaudible via CosyVoice). **HONEST:
+end-to-end TTFO only modestly better** — en ~3.95→~3.5s median, zh median ~flat (mean 5.33→4.79s, worst
+6.58→5.25s) — because the LLM was only ~1/3(en)/~1/6(zh) of the budget; the shared-GPU **TTS (~1.8s) +
+steady-hold (~2.0s zh) now dominate** and are noisy. The real win is variance/tail: Groq TTFT is bounded, so a
+multi-second LLM spike can no longer happen.
+
+**Model selection — baseline = `meta-llama/llama-4-scout` (2026-07-04, after a wider search).** It beats the
+first pick (`llama-3.3-70b`) on every axis: same speed (Groq, non-reasoning, TTFT ~0.6–1.1s), clean Traditional
+zh that is *substantive + accurate*, and **~5× cheaper**. **Pricing correction:** pinning `llama-3.3-70b` to
+Groq actually costs **$0.59/$0.79 per 1M**, not the "$0.10/$0.32" first quoted — OpenRouter's `/models` returns
+the *cheapest* provider (DeepInfra), while `/endpoints` gives the per-provider price you actually pay when you
+pin. scout-on-Groq is $0.11/$0.34. In a clean 5-question isolated eval (same system prompt): scout gave correct
+Taiwan-idiomatic answers (台北101 w/ specifics, a real boiled-egg recipe); `llama-3.1-8b` had ERRORS (認主意
+nonsense, mislabeled 四四南村 as a night market, truncated answers) → rejected; `llama-3.3-70b` good but terser +
+the ≤10-char first-sentence rule made it emit broken openers ("人工智慧是。"). Every *mid-cost* model is a
+REASONING model (gpt-oss-20b/120b, qwen3-32b) → slower TTFT; Qwen2.5-72b (non-reasoning, Chinese-native) is only
+on non-fast providers (DeepInfra/Novita, ~1.2–1.4s) + leans mainland vocab (計算機/信息). **The fast +
+non-reasoning + clean-Traditional set on Groq is just the Llamas** (scout=win, 3.3-70b=good-pricey, 3.1-8b=errors).
+**METHOD GOTCHA:** `pipeline.log` never records a turn's OUTPUT text (only prior-turn context + token counts),
+and `measure` connects fresh single-turn — so you CANNOT judge a model's live reply quality from the log; use an
+ISOLATED multi-question probe (an early "8b looks shallow live" read was stale log data). Token *streaming* is
+identical across scout/70b/8b (word-sized deltas, sub-10ms inter-token gaps, no bursting) — not a differentiator.
+Scout's English style runs longer + tends to end every reply with a follow-up question (fine in zh; a possible
+en tweak via the English system prompt, deferred).
+
+**Stacked lever — zh short-first-sentence prompt.** CosyVoice prefills the whole first sentence before any
+audio, and the first-clause split (`COSYVOICE_FIRST_PIECE`, the en lever) barely fires for zh. Adding
+"第一句話要特別短（十個字以內），先講重點" to the mandarin system prompt (`config.py`) trimmed the zh TTS
+first-chunk: zh TTS hop 1.82→1.67s, zh TTFO ~5.14→~4.34s median (~0.3–0.5s), quality intact. (Llama occasionally
+ignores the ≤10-char rule on definitional questions.)
+
+**Goal tightened `<8s` → `<3s`** the same session (docs + `TTFO_TARGET_SECONDS` default + `TtfoMeter` +
+`measure.py` display). Current en ~3.5s / zh ~4.3s now sit **over** the bar → every turn logs `[TTFO OVER]`.
+The remaining ~0.5–1.5s is shared-GPU-bound; the realistic path to 3s on zh is a **dedicated avatar GPU** (frees
+TTS + render at once). `MUSETALK_SYNC_MODE=live` would erase the steady-hold but is **rejected by the user** —
+the voice leads the lips ~1–2s (keep `steady`). NOT git-committed (held for live A/V sign-off). Memories:
+`project-visualllm-llm-groq-pin-ttfo`, `feedback-visualllm-steady-not-live`.

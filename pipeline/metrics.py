@@ -3,7 +3,7 @@
 TtfoMeter is a Pipecat FrameProcessor you drop into the pipeline. It measures
 Time-To-First-Output (TTFO): the gap between the user finishing their turn
 (UserStoppedSpeakingFrame) and the bot's first outgoing speech/video
-(BotStartedSpeakingFrame). This is the core acceptance metric — target < 8 s.
+(BotStartedSpeakingFrame). This is the core acceptance metric — target < 3 s.
 
 Place it once near the end of the pipeline so it sees both upstream user events
 and downstream bot events.
@@ -24,7 +24,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
 class TtfoMeter(FrameProcessor):
-    def __init__(self, target_s: float = 8.0):
+    def __init__(self, target_s: float = 3.0):
         super().__init__()
         self._target_s = target_s
         self._turn_end_t: float | None = None

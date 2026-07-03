@@ -8,7 +8,7 @@ speech → STT → LLM → TTS → lip-sync avatar → audio+video out
 ```
 
 **Goal:** time-to-first-output (you stop speaking → avatar starts responding)
-**< 8 seconds**.
+**< 3 seconds**.
 
 The whole system streams: as soon as the LLM emits its first sentence it flows
 to TTS → first audio chunk → the avatar starts talking. We never wait for a
@@ -102,5 +102,5 @@ Chinese). Deepgram switches to `zh-TW` and CosyVoice speaks zh — no code chang
 ## Measuring the goal
 
 - `TtfoMeter` (in the pipeline) logs each turn's TTFO and a p95 summary.
-  **Pass = p95 < 8 s.**
+  **Pass = p95 < 3 s.**
 - Biggest tuning lever: the VAD `stop_secs` in `pipeline/stages/vad.py`.

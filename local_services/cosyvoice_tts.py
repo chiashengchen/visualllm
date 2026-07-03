@@ -3,7 +3,7 @@
 This is a thin HTTP client: it streams text to a local CosyVoice2 server (the
 user's cosyvoice-local-tts FastAPI server, /tts/stream endpoint) and yields audio
 chunks as soon as they arrive, so the avatar can start lip-syncing on the first
-chunk -- the streaming path that keeps the <8s time-to-first-output budget.
+chunk -- the streaming path that keeps the <3s time-to-first-output budget.
 
 The server returns raw 16-bit PCM mono at `sample_rate` (default 24 kHz, which is
 CosyVoice2's native rate). Pipecat resamples downstream (to 16 kHz for the avatar).

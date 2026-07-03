@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A real-time **speech → STT → LLM → TTS → photoreal talking-head avatar** system.
-Multi-turn, streaming end-to-end. Goal: time-to-first-output **< 8 s**. Built on
+Multi-turn, streaming end-to-end. Goal: time-to-first-output **< 3 s**. Built on
 **Pipecat 1.3.0**, WebRTC to a browser at `/client`.
 
 **Current stack (fully local TTS + avatar). See `STATUS.md` for the full state + the
@@ -60,12 +60,18 @@ Clean recovery = stop all three → start cosyvoice on the near-empty card (`run
 **Chinese first-chunk is slower than English, and the two languages want DIFFERENT TTFO levers
 (2026-07-03).** CosyVoice's zh first-chunk TTFB is ~2.3s vs en ~1.1s — Chinese commits to a *bigger opening
 stream chunk*. The two levers, and why each fits one language:
-- **`COSYVOICE_FIRST_HOP=5` (baseline, set in the cosyvoice repo's `run_vllm_server.sh`) = the zh lever.**
-  It emits the first audio after fewer speech tokens, capping zh's big opening → zh first-chunk ~2.5s→~1.8s,
-  whole natural sentences. The old "do NOT enable — starves the avatar (lips 2s→8s)" verdict was **pre-TensorRT**;
-  with `MUSETALK_TRT=1` the render holds ≥12fps under the extra load, so hop=5 no longer starves. It does NOT
-  help English (en's opening is already small; en's sentences are *long*, and hop must wait for the whole
-  sentence) and is harmless there (the split feeds en short clauses anyway).
+- **`COSYVOICE_FIRST_HOP_ZH=5` (baseline, set in the cosyvoice repo's `run_vllm_server.sh`) = the zh lever,
+  applied to CHINESE ONLY** (`tts_engine.py::_apply_first_hop`, per-request by `is_cjk(text)`). It emits the
+  first audio after fewer speech tokens, capping zh's big opening → zh first-chunk ~2.5s→~1.8s, whole natural
+  sentences. The old "do NOT enable — starves the avatar (lips 2s→8s)" verdict was **pre-TensorRT**; with
+  `MUSETALK_TRT=1` the render holds ≥12fps under the extra load, so hop=5 no longer starves *for zh*.
+  **Why zh-only (2026-07-03, measured):** the hop is NOT harmless on English — the earlier global
+  `COSYVOICE_FIRST_HOP=5` was found to push the **English lip-start lag ~0.70s → ~1.95s** (its extra
+  turn-start vocoder burst starves MuseTalk's *first-frame* render — the one thing TRT's mid-turn headroom
+  doesn't cover) for ~no en benefit (en's opening is already small; its long sentences make hop wait for the
+  whole sentence anyway). So English is forced to `hop=0` (`COSYVOICE_FIRST_HOP_EN`, default 0) and uses the
+  clause split instead. Verified: isolated TTFB en 3.15s (hop=0) / zh 2.00s (hop=5); live en lip-start back to
+  +0.70s, flat +0.62s offset all turn. Legacy `COSYVOICE_FIRST_HOP` still read as the zh default if set.
 - **`COSYVOICE_FIRST_PIECE` (the first-clause split, `.env`) = the en lever.** en's long sentences benefit
   from starting speech on the first *clause* early — which hop can't do. It's a near-no-op for zh (zh sentences
   are shorter than its char thresholds; forcing a small zh split cuts mid-word — 天氣預|報 — and was rejected).
@@ -79,6 +85,15 @@ are **deliberate fallback switches, not multi-provider branching**:
 - `TTS_PROVIDER` = `cosyvoice` (default) | `moss` (local MOSS-TTS-Realtime, `:8003`) | `elevenlabs` | `deepgram`.
 - `LLM_PROVIDER` = `openrouter` (default; point `OPENROUTER_BASE_URL` at `https://openrouter.ai/api/v1` for
   cloud or `http://localhost:11434/v1` for a local Ollama model) | `weather_chain` (NCU zh weather bot).
+  **`OPENROUTER_PROVIDER_ONLY` (2026-07-04, TTFO lever):** pin OpenRouter to a fast backend (default
+  **`Groq`**) instead of the default transpacific Gemini route — the LLM hop was the dominant TTFO cost +
+  all its variance. Injected as `extra_body.provider.only` via pipecat's `Settings.extra` (`stages/llm.py`).
+  Cut the LLM hop ~1.1–1.6s (tail to 3.6s) → **~0.7s tight** (zh 1.64→0.80s median, en 1.07→0.67s). Empty =
+  unpinned Gemini, fully revertible. End-to-end TTFO only modestly down (TTS + steady-hold now dominate); the
+  real prize is the killed 7–8s LLM-tail. **Model baseline = `meta-llama/llama-4-scout`** (Groq, non-reasoning):
+  same speed as `llama-3.3-70b`, clean *substantive* Traditional zh, and ~5× cheaper ($0.11/$0.34 vs the 70b's
+  real Groq price $0.59/$0.79). Rejected: `llama-3.1-8b` (zh errors), all mid-cost models (reasoning → slower).
+  Judge model quality with an ISOLATED probe — `pipeline.log` never logs a turn's reply text. `docs/PROBLEMS-AND-FIXES.md` P21.
 
 **The web config panel (`local_services/config_panel/`, `:7870`) is the easy way to change all of this**
 — it edits `.env` in place (preserving comments) and restarts the pipeline. Run it with the system
@@ -127,7 +142,9 @@ keeps the CPU composite). Output is pixel-identical — SSIM 1.0, ≤1 LSB vs th
 if a crop_box runs off-frame. Code default off (opt-in); `app.py::_composite_gpu`. **Benchmarked: at 12fps
 it does NOT reduce A/V drift** (TRT already holds render ≥12fps, even under 100% GPU contention) — the win
 is reserve headroom + a freed CPU, judged by the live call. `docs/PROBLEMS-AND-FIXES.md` P17),
-`MUSETALK_LEAD_FRAMES` (**14, load-bearing** — lower starves the queue → freeze),
+`MUSETALK_LEAD_FRAMES` (**14, load-bearing** — it IS the synced-start delay AND a mid-turn shock absorber;
+lower starves the queue → freeze. Lowering it for TTFO was swept + REJECTED: `lead=6` alone is smooth but
+`hop=5`+`lead=6` is choppy — see `docs/PROBLEMS-AND-FIXES.md` P19),
 `COSYVOICE_PACE_RATE` (1.3, in the cosyvoice server — caps voice production so it doesn't burst
 the shared GPU), `COSYVOICE_FIRST_PIECE` (**1 = default, TTFO win**: emit a short opening CLAUSE to
 TTS first, then normal sentences. CosyVoice's first-chunk TTFB scales with the INPUT sentence length
@@ -228,7 +245,7 @@ Each stage is built by a thin factory in `pipeline/stages/` from `config` (one
 provider, no branching). The whole thing streams: the LLM's first sentence
 reaches TTS before the full answer exists, and TTS's first audio chunk reaches
 the avatar immediately. `TtfoMeter` (`pipeline/metrics.py`) measures the gap from
-`UserStoppedSpeakingFrame` → `BotStartedSpeakingFrame` (the <8 s metric).
+`UserStoppedSpeakingFrame` → `BotStartedSpeakingFrame` (the <3 s metric).
 
 **The avatar is a separate GPU process.** `local_services/musetalk_video.py`
 (`MuseTalkVideoService`, the pipeline FrameProcessor) ↔ `local_services/musetalk_server/app.py`

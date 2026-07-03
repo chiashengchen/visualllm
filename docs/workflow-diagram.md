@@ -105,7 +105,7 @@ flowchart TD
   %% ---------- PHASE 6: DELIVER ----------
   subgraph P6["⑥ Deliver / Sync out & loop"]
     direction TB
-    P6a["TtfoMeter — UserStopped → BotStarted (< 8 s)"]
+    P6a["TtfoMeter — UserStopped → BotStarted (< 3 s)"]
     P6b["transport.output() → WebRTC A+V → browser"]
     P6c["One fps everywhere<br/>server stride = client clock = video_out_framerate"]
     P6d["Assistant aggregator records turn<br/>next turn sees full history"]
@@ -179,4 +179,4 @@ flowchart TD
 **Streaming overlap (why TTFO is small):** the LLM's *first sentence* reaches TTS before the full
 answer exists, and TTS's *first chunk* reaches the avatar immediately — so end-to-end
 TTFO ≈ **VAD + LLM**, not the sum of every stage. Measured: median **1.97 s**, p95 **2.86 s**,
-against the **< 8 s** acceptance bar.
+against the **< 3 s** acceptance bar.
