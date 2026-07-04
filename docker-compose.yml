@@ -55,6 +55,9 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
+    # Reach the pipeline which runs on host network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - pipeline
 
@@ -66,13 +69,14 @@ services:
     image: visualllm/pipeline:latest
     container_name: pipeline
     restart: unless-stopped
-    ports:
-      - "7860:7860"
+    # host networking: WebRTC UDP sockets bind directly on the host IP,
+    # bypassing Docker NAT so browser ICE candidates can reach the server.
+    network_mode: host
     environment:
       ENABLE_AVATAR: "0"
       AVATAR_MEMORY: "0"
       TTS_PROVIDER: cosyvoice
-      COSYVOICE_URL: http://cosyvoice:8001    # service name resolves inside compose network
+      COSYVOICE_URL: http://localhost:8001    # cosyvoice port 8001 is mapped to host
       LLM_PROVIDER: openrouter
       LANGUAGE: zh
       WEBRTC_ICE_SUBNET: "0"
@@ -82,8 +86,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemini-2.5-flash-lite}
     depends_on:
-      cosyvoice:
-        condition: service_healthy
+      - cosyvoice
 
 volumes:
   cosyvoice-weights:    # persists model weights across restarts
