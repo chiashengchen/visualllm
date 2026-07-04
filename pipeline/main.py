@@ -423,6 +423,32 @@ def _restrict_ice_to_subnet() -> None:
     )
 
 
+def _configure_stun_servers() -> None:
+    """Inject STUN servers into SmallWebRTCRequestHandler so the server discovers
+    its public IP as a server-reflexive ICE candidate.
+
+    Needed on GCP (and any 1:1-NAT host) where the public IP is not assigned to any
+    local interface — without STUN the server only advertises its Docker/private IP
+    and the browser cannot reach it via UDP.  WEBRTC_STUN_URL=0 disables."""
+    stun_url = os.getenv("WEBRTC_STUN_URL", "stun:stun.l.google.com:19302")
+    if not stun_url or stun_url == "0":
+        return
+    try:
+        from pipecat.transports.smallwebrtc.connection import IceServer
+        from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequestHandler
+
+        _orig_init = SmallWebRTCRequestHandler.__init__
+
+        def _patched_init(self, **kwargs):
+            _orig_init(self, **kwargs)
+            self._ice_servers = [IceServer(urls=stun_url)]
+
+        SmallWebRTCRequestHandler.__init__ = _patched_init
+        logger.info(f"WebRTC STUN configured: {stun_url} (WEBRTC_STUN_URL=0 to disable).")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"STUN setup skipped: {e!r}")
+
+
 if __name__ == "__main__":
     import sys
 
@@ -449,6 +475,8 @@ if __name__ == "__main__":
     # Pin ICE host candidates to the Tailscale interface so the stable 100.x<->100.x pair
     # wins immediately (kills the intermittent-mic ICE pollution -- see the function docstring).
     _restrict_ice_to_subnet()
+    # Add STUN so the server discovers its public IP on GCP / any 1:1-NAT host.
+    _configure_stun_servers()
     from pipecat.runner.run import main
 
     main()
