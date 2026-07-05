@@ -1,6 +1,7 @@
 # VisualLLm — Project Status & Next Steps
 
-_Last updated: 2026-07-05 (**8th session — local OFFLINE STT shipped + two live root-causes found.**
+_Last updated: 2026-07-06 (**9th session — measure system now reports TRUE latency-to-the-user's-ear via a
+per-stage waterfall; see the top HANDOFF.** Prior **8th session — local OFFLINE STT shipped + two live root-causes found.**
 (1) **Local sherpa STT integrated** onto `feat/ttfo-first-clause-split` (surgical port from `feat/offline-stt-sensevoice`,
 commits `5bacfa8`+`df278fd`; Deepgram still default, `STT_PROVIDER=sherpa` opt-in, CPU/~0 VRAM). Fixed both open
 items: `[TTFO]` count:0 (meter armed only on `UserStoppedSpeakingFrame`, sherpa drives turns with
@@ -48,6 +49,77 @@ non-hardware levers, **Lever 1 (GPU stream priority)** + **Lever 3 (stagger the 
 block below + `docs/PROBLEMS-AND-FIXES.md` P20. Prior (2nd) session: TTFO hop×lead sweep, negative, baseline
 stands (P19). (2026-07-02): Chinese TTS fixed (RAS + "pro" voice); avatar baseline `MUSETALK_TRT=1`, LLM cloud
 gemini-2.5-flash-lite; TTFO ~4.6s→~3.2s via the first-clause split `COSYVOICE_FIRST_PIECE=1`.)_
+
+## ⭐ HANDOFF → next session (2026-07-06, 9th): measure system now reports the TRUE per-stage latency all the way to the user's ear
+
+**What shipped.** The measure harness (`scripts/measure.py`) now decomposes a turn into a **per-stage latency
+waterfall that sums to a true end-to-end number** — closing the gap where `[TTFO]` stopped at
+`BotStartedSpeakingFrame` (pipeline starts pushing audio) and the last mile (transport pacing, steady lead-hold,
+WebRTC encode, network, jitter buffer, playout) was invisible. **Core mechanism:** the headless probe and the
+pipeline run on the SAME box = the SAME wall clock, so `t0.timestamp()` (log t0) vs the probe's `time.time()` vs
+the browser's `Date.now()` are one epoch — stitch them and every client arrival becomes a real offset from t0.
+Spec: `docs/superpowers/specs/2026-07-06-measure-end-to-end-latency-design.md`; plan:
+`docs/superpowers/plans/2026-07-06-measure-end-to-end-latency.md`.
+
+**THE TABLE — a clean measured zh turn (2026-07-06 01:52, full stack up):**
+
+| Stage (from t0 = user stopped) | Δ | cum | source |
+|---|---|---|---|
+| STT finalize -> LLM | +0.00s | 0.00s | assumed (pre-warmed) |
+| LLM first token | — | — | **unknown** (synthetic-mic VAD split; real turn would populate) |
+| LLM -> TTS (1st-clause flush) | +1.04s | 1.04s | log |
+| TTS synth first chunk | +0.68s | 1.72s | log |
+| TTS -> bot-start (steady lead-hold) | +0.50s | **2.22s = TTFO** | log |
+| **Transport + encode + network** | **+0.86s** | 3.08s | probe *(was invisible)* |
+| **Browser jitter + decode + playout** | **+0.40s** | **3.48s** | est (400ms jitter buffer) |
+| **END-TO-END, user hears** | | **3.48s** | |
+
+**Headline: `[TTFO]`=2.22s but the user HEARS the voice at 3.48s — a +1.26s last mile that was previously
+unmeasured.** (Transport +0.86s is MEASURED at a headless client; browser +0.40s is ESTIMATED from
+`CLIENT_JITTER_BUFFER_MS` until a real browser beacon fills it.)
+
+**Two last-mile sources (dual, like the existing `lip_offset` offline/webrtc):**
+1. **Headless (always-on):** `python -m scripts.measure --mic <wav>` drives a turn, and the audio pump now records
+   `(epoch, rms)` per frame; `answer_onset_epoch()` finds the first sustained energetic frame after t0 = the answer
+   reaching the client. Gives the `probe` transport row automatically, no browser.
+2. **Real browser (opt-in, `CLIENT_PLAYOUT_PROBE=1`, default OFF):** a `<head>`-injected AnalyserNode taps the bot
+   audio track and beacons `[client-playout] {"ev":"audio-onset","t":<ms>}` to a new `/client/playout` endpoint the
+   first time RMS crosses threshold (re-arms per turn). `python -m scripts.measure --from-browser` parses that beacon
+   into the `browser` row (labeled `browser+net` when there's no headless probe, since that Δ then absorbs transport).
+
+**Verification state (what I proved vs what's left):**
+- **Headless path: FULLY verified live by me** (the table above is a real run). It also EXPOSED + fixed a real bug
+  the offline tests couldn't: a synthetic-mic turn matched an LLM-TTFB line from before t0 → rendered a negative
+  `-1.34s` latency; now any negative (pre-t0) anchor renders **unknown** (a stage can't finish before the turn
+  starts). 7/7 pure tests green.
+- **Browser beacon path: server side proven end-to-end via a synthetic beacon** — armed `CLIENT_PLAYOUT_PROBE=1`,
+  restarted via the config panel, confirmed (a) the probe script IS served on `/client/`, (b) `/client/playout`
+  returns 204 + logs, (c) `--from-browser` parses it into the waterfall (`browser+net +0.36s cum 2.50s`). **The ONLY
+  unexercised link is a real browser's AudioContext firing on real voice** — needs a human at the page with a mic.
+  When you do it: `CLIENT_PLAYOUT_PROBE=1` in `.env`, restart, open `/client/`, one turn, `--from-browser`.
+
+**GOTCHAS for next session:**
+- **Synthetic-mic drives VAD-split** (the WAV's internal pause) → the turn's question text merges two sub-turns
+  (`明天'}...台北攀不開下雨`) and the LLM-TTFB anchor can land pre-t0 → the **LLM row shows `unknown`**. That's the
+  guard working, NOT a bug; a real human turn populates it.
+- **Live browser TTFO does NOT log for rapid/overlapping (barge-in) turns** — `pipeline/metrics.py`'s TtfoMeter only
+  fires on a clean user-stop->bot-start pair (saw bot stop->start 2ms apart on fast turns → no `[TTFO]`). Pre-existing
+  behavior; `metrics.py` was deliberately left UNTOUCHED by this feature.
+- **`measure.py` reads the LAST `[TTFO]` in the log**; the new **staleness guard** blanks `client_arrival` (with a
+  warning) if that turn is older than `duration+tail+15s`, so a stale t0 can never silently produce a wrong number.
+
+**Commits + branch state:** 10 commits on `feat/ttfo-first-clause-split` (`e30aa77` spec, `4244a6e` plan, then
+`481c8be`..`e6f5bba` code), reviewed per-task + a final opus whole-feature review (**Ready-to-merge: YES, no
+Critical/Important**). **NOT on `main`** — the user chose keep-on-branch (the browser-beacon commit `4f1d883`
+hard-depends on held infra `f3ebb3f`'s client-patch middleware, so "measure only" isn't cleanly separable; it all
+lands together when the branch is validated live + merged). Stack left healthy, probe OFF, `.env` byte-clean.
+
+**OPEN:**
+- **Real-browser onset test** (the one human-only verification link above).
+- **`docs/PRESENTATION.md`:** my spec commit `e30aa77` swept up a pre-staged 259-line deletion of it (it was already
+  `D` in the index at session start). Decide keep vs. split back out — user was asked, deferred.
+
+---
 
 ## ⭐ HANDOFF → next session (2026-07-05, 8th): zh turn-start "breathing sound" diagnosed = CosyVoice's leading breath; trim REJECTED, no-trim is BASELINE
 
