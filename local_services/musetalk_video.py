@@ -108,12 +108,6 @@ class MuseTalkVideoService(FrameProcessor):
         # is experimental: MuseTalk renders in ~0.4s segments so the skip can stall the lips.
         self._max_lag = float(os.getenv("MUSETALK_SYNC_MAX_LAG", "0"))
         self._last_hold_log = 0.0
-        # live (audio-master) bookkeeping: audio SENT to the server for lip-sync vs the
-        # server's RENDERED seconds (from video_clock). When sent runs > max_lag ahead of
-        # rendered, we skip feeding the server so the lips stay current (the voice is already
-        # forwarded in full at real-time).
-        self._audio_sent_s = 0.0
-        self._video_s = 0.0
 
         # Real-time-paced feed to the server (live mode). CosyVoice produces the whole reply
         # FASTER than real-time (RTF<1); if we forwarded all that audio to the renderer as fast
@@ -332,7 +326,6 @@ class MuseTalkVideoService(FrameProcessor):
             self._cancel_fallback()
             self._video_active = True
         elif kind == "video_clock":
-            self._video_s = int(evt.get("frames", 0)) / self._fps   # rendered secs (live skip uses this)
             if not self._unsynced and self._mode == "steady":
                 await self._advance()   # heartbeat (real pacing is on frame receipt)
         elif kind == "video_end":
@@ -446,14 +439,6 @@ class MuseTalkVideoService(FrameProcessor):
         except Exception:  # noqa: BLE001 -- close polish only; never disrupt the next turn
             pass
 
-    def _log_live(self, behind: float):
-        now = asyncio.get_running_loop().time()
-        if now - self._last_hold_log >= 1.0:
-            self._last_hold_log = now
-            logger.info(f"[musetalk live] lip-behind={behind:0.2f}s "
-                        f"(sent {self._audio_sent_s:0.1f}s, rendered {self._video_s:0.1f}s)"
-                        f"{' SKIP' if self._max_lag > 0 and behind > self._max_lag else ''}")
-
     def _reset_turn(self):
         self._abuf = []
         self._aidx = 0
@@ -462,8 +447,6 @@ class MuseTalkVideoService(FrameProcessor):
         self._released_idx = 0
         self._video_active = False
         self._unsynced = False
-        self._audio_sent_s = 0.0
-        self._video_s = 0.0
         self._t_audio_first = None
         self._t_vid_first = None
         self._t_vid_last = None

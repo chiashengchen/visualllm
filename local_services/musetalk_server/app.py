@@ -107,7 +107,6 @@ class MuseTalkEngine:
         self.idx = 0  # base-frame cursor (cycles for video refs; static for a photo)
         self._trt = None  # set by _init_trt() when MUSETALK_TRT=1; None => PyTorch render path
         self._gpu_composite = False  # set by _init_gpu_composite() when MUSETALK_GPU_COMPOSITE=1
-        self._hp_stream = None  # high-priority CUDA stream (MUSETALK_HP_STREAM=1); None => default stream
 
     # --- one-time load ----------------------------------------------------
     def load(self):
@@ -203,7 +202,6 @@ class MuseTalkEngine:
                 logger.exception("TRT init failed; using the PyTorch render path.")
                 self._trt = None
         self._init_gpu_composite()
-        self._init_hp_stream()
         logger.info(
             f"MuseTalk ready. {len(self.frame_cycle)} base frame(s) prepared; "
             f"{len(self._idle_loop)} idle frame(s)."
@@ -541,28 +539,6 @@ class MuseTalkEngine:
         self._gpu_composite = True
         logger.info("MuseTalk GPU composite enabled (MUSETALK_GPU_COMPOSITE=1).")
 
-    def _init_hp_stream(self):
-        """Lever 1: render on a HIGH-PRIORITY CUDA stream (MUSETALK_HP_STREAM=1) so the avatar's
-        UNet/VAE kernels preempt CosyVoice's turn-start vocoder burst on the shared GPU. lower
-        number = higher priority; CUDA clamps -1 to the greatest priority the device supports.
-        HONEST CAVEAT: CosyVoice runs in WSL and MuseTalk in Windows -- two GPU processes under
-        the WDDM scheduler, which does NOT strongly honor CROSS-PROCESS stream priority (CUDA MPS,
-        which would, is Linux-only). So this may be a no-op live; judge by the live `hold=`. Any
-        failure -> default stream."""
-        self._hp_stream = None
-        if os.getenv("MUSETALK_HP_STREAM", "0").lower() not in ("1", "true", "yes"):
-            return
-        torch = self.torch
-        if not torch.cuda.is_available():
-            logger.info("MUSETALK_HP_STREAM=1 ignored: no CUDA device.")
-            return
-        try:
-            self._hp_stream = torch.cuda.Stream(device=self.device, priority=-1)
-            logger.info("MuseTalk high-priority render stream enabled (MUSETALK_HP_STREAM=1).")
-        except Exception:  # noqa: BLE001 -- best-effort; fall back to the default stream
-            logger.exception("HP stream init failed; using the default CUDA stream.")
-            self._hp_stream = None
-
     def _composite_gpu(self, mouth_rgb01, idx: int) -> bytes:
         """GPU twin of _composite. `mouth_rgb01` is the VAE output for one frame: a
         (3,256,256) RGB[0,1] GPU tensor. Alpha-blend it into the base frame within the
@@ -588,18 +564,6 @@ class MuseTalkEngine:
         return u8.contiguous().cpu().numpy().tobytes()
 
     def render_segment(self, audio: np.ndarray) -> list[bytes]:
-        """Run one segment, optionally on the high-priority stream (Lever 1). The stream
-        context is thread-local and this runs in a worker thread, so it must be entered
-        HERE (not in the caller). trt_runtime reads torch.cuda.current_stream(), so the TRT
-        engines + all torch ops below inherit it."""
-        if self._hp_stream is None:
-            return self._render_segment(audio)
-        with self.torch.cuda.stream(self._hp_stream):
-            out = self._render_segment(audio)
-        self._hp_stream.synchronize()
-        return out
-
-    def _render_segment(self, audio: np.ndarray) -> list[bytes]:
         """One audio segment (float32 [-1,1] @16k) -> list of RGB frame buffers.
 
         Runs on a worker thread (GPU-bound). Index cursor and base frames are
