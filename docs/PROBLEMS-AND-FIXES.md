@@ -1281,3 +1281,48 @@ fully reverted (`cosyvoice_tts.py` back to HEAD, `.env` `COSYVOICE_TRIM_LEAD*` r
 **server-side in CosyVoice** (trim the lead on the raw waveform where buffers are whole, or clean the reference clip),
 not as a byte-stream trim in the pipecat client. Diagnosis method kept: probe `:8001` directly and read the
 pre-speech dB envelope (`scratchpad_tts/` samples).
+
+## P35 — `[TTFO]` undercounts the real latency the user HEARS by ~1.26s; measure now reports a to-the-ear waterfall ✅ SHIPPED (2026-07-06, 9th session)
+
+**Problem.** The acceptance metric `[TTFO]` (`pipeline/metrics.py`) measures `UserStoppedSpeaking →
+BotStartedSpeakingFrame` — i.e. when the pipeline *starts pushing* audio into the transport. Everything after that was
+**unmeasured**: transport output pacing, the steady lead-hold, WebRTC encode, network/depacketize, and the browser's
+own jitter buffer + decode + speaker playout. The old `scripts/measure.py` compounded the blind spot — its headless
+probe recorded frame/packet *arrival* on a separate `time.time()` clock that was never joined to the pipeline log's
+clock, so nothing summed to a true end-to-end and the last mile was invisible.
+
+**Fix — a per-stage latency waterfall summing to the user's ear.** Key realization: the probe and the pipeline run on
+the **same box = the same wall clock**, so `t0.timestamp()` (log t0), the probe's `time.time()`, and the browser's
+`Date.now()` are one epoch. Stitch them → every client arrival is a real offset from t0. Two last-mile sources
+(mirroring the existing dual `lip_offset`): **(1) headless, always-on** — the audio pump records `(epoch, rms)` per
+frame; `answer_onset_epoch()` finds the first sustained energetic frame after t0 = the answer reaching the client (the
+`probe` transport row, no browser); **(2) real browser, opt-in** `CLIENT_PLAYOUT_PROBE=1` (default OFF) — a
+`<head>`-injected AnalyserNode taps the bot audio track and beacons `[client-playout] {"ev":"audio-onset","t":<ms>}`
+to a new `/client/playout` endpoint (env-gated via the sanctioned `_client_head_patches` injection, bundle untouched);
+`scripts.measure --from-browser` parses it into the `browser` row (labeled `browser+net` when there's no headless
+probe, since that Δ then absorbs transport). `pipeline/metrics.py` is **deliberately untouched** — the waterfall is
+derived in `measure.py`.
+
+**Measured (clean zh turn, full stack):** `[TTFO]`=**2.22s** but the user HEARS the voice at **3.48s** — a **+1.26s
+last mile** (transport +0.86s measured, browser +0.40s estimated at the 400ms jitter buffer) that was previously
+invisible. LLM +0.68s → TTS first-chunk +1.04s → steady hold +0.50s are the server-side legs.
+
+**Findings the live run exposed (the offline tests couldn't):**
+- **Negative (pre-t0) anchor bug ✅ FIXED.** A synthetic-mic turn whose internal pause VAD-split into two sub-turns
+  matched an LLM-TTFB log line from *before* this turn's t0 → the LLM row rendered a physically-impossible **−1.34s**
+  latency. A stage can't complete before the turn starts, so any negative/`None` anchor now renders **`unknown`**
+  (never a fake number); the sum still telescopes through the later real anchors. Locked with a unit test.
+- **Live-browser TTFO doesn't log for rapid/overlapping (barge-in) turns** — the TtfoMeter only fires on a clean
+  user-stop→bot-start pair; back-to-back turns (bot stop→start 2ms apart) leave it unarmed, so no `[TTFO]`. Pre-existing
+  `metrics.py` behavior, surfaced here; not changed.
+- **Staleness guard:** `measure.py` reads the LAST `[TTFO]`; if that turn is older than `duration+tail+15s` it blanks
+  `client_arrival` with a warning, so a stale t0 can never silently produce a wrong latency.
+
+**Verification state.** Headless path **fully verified live**; browser-beacon path **proven server-side end-to-end via
+a synthetic beacon** (script IS served on `/client/`; `/client/playout` 204+logs; `--from-browser` parses it,
+`browser+net +0.36s cum 2.50s`) — the ONLY unexercised link is a real browser's AudioContext firing on real voice
+(needs a human at the page + mic). 7/7 pure tests green; final opus whole-feature review = Ready-to-merge YES, no
+Critical/Important. **10 commits on `feat/ttfo-first-clause-split`, NOT on `main`** (kept on-branch: the browser-beacon
+commit hard-depends on held client-patch infra, so "measure only" isn't cleanly separable). Spec/plan:
+`docs/superpowers/{specs,plans}/2026-07-06-measure-end-to-end-latency*`. Full run recipe: `CLAUDE.md` Commands →
+Avatar A/V test tooling.

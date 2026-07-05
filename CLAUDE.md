@@ -255,6 +255,18 @@ python -m scripts.preflight
 # UNIFIED harness (PREFER THIS): one command = WebRTC probe + pipeline.log parse + offline capture ->
 # output/measure_report.json + docs/measure_data.js (docs/workflow-timeline.html auto-uses it on reload).
 python -m scripts.measure --offline-capture                        # full turn timeline + handoffs + metrics
+#   measure.py ALSO reports a per-stage LATENCY WATERFALL to the user's EAR (not just server-side [TTFO]):
+#   it stitches the same-box probe arrival onto the log's t0 (t0.timestamp() == the probe's time.time()) so
+#   the last mile (transport + WebRTC encode + network, then browser jitter/playout) is measured, summing to a
+#   true end-to-end. Two last-mile sources: (1) HEADLESS always-on -- the audio pump records (epoch, rms) per
+#   frame, first sustained energetic frame after t0 = the answer reaching the client (the `probe` row); (2) REAL
+#   BROWSER opt-in `CLIENT_PLAYOUT_PROBE=1` (default OFF) -- a <head>-injected AnalyserNode taps the bot audio
+#   and beacons `[client-playout]` first-voice-onset to a new /client/playout endpoint; then:
+python -m scripts.measure --from-browser                           # parse-only: fills the `browser` playout row
+#   Missing/pre-t0 anchors render `unknown` (never a fake/negative latency); a staleness guard blanks the client
+#   arrival if the last [TTFO] turn is older than duration+tail+15s. NOTE: synthetic-mic drives can VAD-split the
+#   wav's internal pause -> the LLM row shows `unknown`; a real human turn populates it. `pipeline/metrics.py`
+#   (the TtfoMeter) is deliberately UNTOUCHED -- the waterfall is derived in measure.py.
 #   (the two tools below are what measure.py wraps; run them standalone only for one-off debugging)
 python -m scripts._webrtc_probe --mic output/q_ai.wav --lead 8     # drives a turn, records + metrics
 E:\miniconda3\envs\musetalk\python.exe -m local_services.musetalk_server._capture output/q_ai.wav  # offline mp4
