@@ -68,10 +68,26 @@ VAD 使用 Silero（本地、幾十 ms 級），TTFO 已含 VAD + STT + LLM + TT
 | nginx | ~0% | 3 MiB |
 | GPU VRAM | — | 3.3 GiB（模型常駐） |
 
-**TTS 推理中：** GPU util 40–45%、VRAM 峰值 ~4.6 GiB。CPU 端 STT/LLM 都是雲端 API，本機負載很輕。
+**TTS 推理中（20 輪壓測，長短句混合，1s 取樣）：**
 
-結論：T4 16GB 綽綽有餘（僅用 ~29%），瓶頸是 **TTS RTF ~1.0**（合成速度只勉強跟上播放速度），
-不是記憶體。若要更快可考慮 `USE_VLLM=1`（本機 WSL 版實測 TTFB 3.4s→1.1s）或換 L4 GPU。
+| 句長（字） | 合成耗時（mean±sd） | 音訊長度 | RTF |
+|-----------|--------------------|---------|-----|
+| 3 | 1.90 ± 0.18 s | 1.0 s | 1.87（短句固定開銷占比高） |
+| 20 | 5.92 ± 0.51 s | 5.9 s | 1.01 |
+| 32 | 6.69 ± 0.23 s | 7.0 s | 0.96 |
+| 51 | 12.65 ± 1.28 s | 13.3 s | 0.95 |
+
+- GPU VRAM：閒置 3.3 GiB → 峰值 4.8 GiB（T4 16GB 只用 ~30%）
+- GPU util：合成中 mean 41%，**p95 = 97%**（合成瞬間會打滿，但每句之間有空檔）
+- Host：load1 max 1.09（4 vCPU，很閒）、RAM 峰值 5.9 GiB / 14 GiB
+
+結論：瓶頸是 **TTS RTF ~1.0**（合成速度剛好等於播放速度），不是記憶體也不是 CPU。
+長回覆時 GPU 全速也只能勉強跟上，句間可能出現空隙。若要更快可考慮 `USE_VLLM=1`
+（本機 WSL 版實測 TTFB 3.4s→1.1s）或換 L4 GPU。
+
+**各 stage 隔離實測**（`testing-mcp-server` `PIPELINE_MODE=real`，從 Mac 打）：
+Deepgram STT（batch，上限值）3.7s、LLM TTFT 0.6s、TTS TTFA 5.1s（兩句一次送）。
+live pipeline 的 TTFO 3.8s 比各 stage 相加低，因為 pipeline 是句子級 streaming 重疊執行。
 
 ## 已知問題 / 待辦
 
