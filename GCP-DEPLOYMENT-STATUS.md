@@ -25,7 +25,9 @@ VM 上兩個 repo（`/home/cschen/visualllm`、`/home/cschen/CosyVoice`）都已
   - `nginx` — HTTPS 終端（自簽憑證），443 → `host.docker.internal:7860`
 - **STUN**: `pipeline/main.py::_configure_stun_servers()` 注入 `stun:stun.l.google.com:19302`，
   讓 aiortc 發現 GCP 1:1 NAT 後面的公網 IP（`WEBRTC_STUN_URL=0` 可關）
-- **防火牆**（tag `visualllm`）: tcp 443/7860/8001/8002 + **udp 49152-65535**（WebRTC media）
+- **防火牆**（tag `visualllm`）: 只開 tcp 443 + **udp 49152-65535**（WebRTC media）。
+  7860/8001/8002 已關（2026-07-06）— 瀏覽器走 443 nginx，pipeline↔cosyvoice 走 localhost；
+  之後要從外部 benchmark TTS 需先 ssh 進 VM 打 localhost:8001
 - 設定: `LANGUAGE=zh`、LLM=openrouter（`google/gemini-2.5-flash-lite`）、STT=Deepgram nova-2
 
 ## Cloud Run CD — 已移除
