@@ -13,10 +13,10 @@ docs/
 tts/
 
 # Local services not needed in container
-local_services/musetalk_server/
+# (musetalk_server + musetalk_video.py ARE needed: Dockerfile.musetalk builds
+#  the avatar server, and the pipeline's avatar stage imports the ws client)
 local_services/moss_server/
 local_services/config_panel/
-local_services/musetalk_video.py
 
 # MCP testing server (separate service)
 testing_mcp/
