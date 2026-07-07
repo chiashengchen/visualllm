@@ -24,6 +24,7 @@ COPY local_services/__init__.py ./local_services/
 COPY local_services/cosyvoice_tts.py ./local_services/
 COPY local_services/weather_chain_llm.py ./local_services/
 COPY local_services/avatar_memory.py ./local_services/
+COPY local_services/musetalk_video.py ./local_services/
 COPY log_setup.py .
 
 # Excluded (Windows-only or GPU-only):
