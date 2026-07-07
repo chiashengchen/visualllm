@@ -6,12 +6,12 @@ _針對 GCP 部署（`visualllm-gpu` VM）。所有指令都在你的 Mac 終端
 
 ## 0. 前置：SSH tunnel（從 Mac 打 CosyVoice 用）
 
-防火牆只開 443 + WebRTC UDP，所以從 Mac 直接打 `8.230.16.27:8001` 是不通的。
+防火牆只開 443 + WebRTC UDP，所以從 Mac 直接打 `34.153.201.22:8001` 是不通的。
 要從本機量 TTS，先開 tunnel：
 
 ```bash
 # 開（-f = 背景執行；之後 Mac 的 localhost:8001 = VM 的 CosyVoice）
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c -- -L 8001:localhost:8001 -N -f
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c -- -L 8001:localhost:8001 -N -f
 
 # 確認通了
 curl http://localhost:8001/health
@@ -30,10 +30,10 @@ pkill -f "L 8001:localhost:8001"
 ### 方法 A：真實對話的 TTFO（最貼近體感，server 端量測）
 
 Pipeline 內建 `TtfoMeter`，每輪對話自動量「你停止說話 → bot 開始出聲」。
-去 `https://8.230.16.27/client/` 講幾句話，然後撈 log：
+去 `https://34.153.201.22/client/` 講幾句話，然後撈 log：
 
 ```bash
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c \
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c \
   --command='sudo docker logs pipeline 2>&1 | grep -E "TTFO|TTFB" | tail -20'
 ```
 
@@ -94,7 +94,7 @@ console.log('TTS : TTFA', t.ttfa_ms.toFixed(0)+'ms, 音訊', t.audioDurationMs?.
 ### 方法 C：純 TTS 壓測（在 VM 上打 localhost，最準）
 
 ```bash
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c --command='
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c --command='
 time curl -s -o /dev/null -X POST http://localhost:8001/tts/stream \
   -H "Content-Type: application/json" \
   -d "{\"text\": \"今天天氣很好，陽光燦爛，很適合外出活動。\"}"'
@@ -109,7 +109,7 @@ time curl -s -o /dev/null -X POST http://localhost:8001/tts/stream \
 ### 一次性快照
 
 ```bash
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c --command='
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c --command='
 echo "── GPU ──";  nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv
 echo "── 容器 ──"; sudo docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 echo "── Host ──"; uptime; free -h | head -2; df -h / | tail -1'
@@ -121,18 +121,18 @@ echo "── Host ──"; uptime; free -h | head -2; df -h / | tail -1'
 
 ```bash
 # GPU 每秒刷新 — 講話時看 utilization 跳動
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c \
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c \
   --command='watch -n 1 nvidia-smi'
 
 # 或容器 CPU/RAM 即時
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c \
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c \
   --command='sudo docker stats'
 ```
 
 ### 抓數據做圖（取樣到 csv）
 
 ```bash
-gcloud compute ssh visualllm-gpu --zone=asia-northeast3-c --command='
+gcloud compute ssh visualllm-gpu --zone=asia-northeast1-c --command='
 for i in $(seq 1 60); do
   echo "$(date +%s),$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits)"
   sleep 1
