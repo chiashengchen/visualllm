@@ -36,7 +36,7 @@ RUN chmod +x local_services/musetalk_server/docker_entrypoint.sh
 
 ENV MUSETALK_SIZE=512
 ENV MUSETALK_FPS=10
-ENV AVATAR_REF=assets/avatar.png
+ENV AVATAR_REF=assets/avatar.jpg
 
 # weights + avatar prep cache live in volumes so restarts are fast
 VOLUME ["/app/local_services/musetalk_server/vendor/MuseTalk/models", \

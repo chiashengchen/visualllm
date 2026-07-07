@@ -62,7 +62,7 @@ services:
     environment:
       MUSETALK_SIZE: "512"
       MUSETALK_FPS: "10"     # conservative for the shared T4; raise if render keeps up
-      AVATAR_REF: assets/avatar.png
+      AVATAR_REF: assets/avatar.jpg
     deploy:
       resources:
         reservations:
