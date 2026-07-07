@@ -45,6 +45,31 @@ services:
       retries: 5
       start_period: 120s    # weight download can take a while on first run
 
+  # ── MuseTalk avatar server (GPU, port 8002) ───────────────────────────────
+  musetalk:
+    build:
+      context: .
+      dockerfile: Dockerfile.musetalk
+    image: visualllm/musetalk:latest
+    container_name: musetalk
+    restart: unless-stopped
+    ports:
+      - "8002:8002"    # pipeline runs on host network → reaches localhost:8002
+    volumes:
+      - musetalk-weights:/app/local_services/musetalk_server/vendor/MuseTalk/models
+      - musetalk-cache:/app/local_services/musetalk_server/avatar_cache
+    environment:
+      MUSETALK_SIZE: "512"
+      MUSETALK_FPS: "10"     # conservative for the shared T4; raise if render keeps up
+      AVATAR_REF: assets/avatar.png
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   # ── HTTPS reverse proxy (nginx + self-signed cert, port 443) ─────────────
   nginx:
     image: nginx:alpine
@@ -73,7 +98,10 @@ services:
     # bypassing Docker NAT so browser ICE candidates can reach the server.
     network_mode: host
     environment:
-      ENABLE_AVATAR: "0"
+      ENABLE_AVATAR: "1"
+      AVATAR_URL: http://localhost:8002    # musetalk publishes 8002 on the host
+      MUSETALK_FPS: "10"    # MUST match the musetalk service fps (one fps everywhere)
+      MUSETALK_SIZE: "512"
       AVATAR_MEMORY: "0"
       TTS_PROVIDER: cosyvoice
       COSYVOICE_URL: http://localhost:8001    # cosyvoice port 8001 is mapped to host
@@ -90,3 +118,5 @@ services:
 
 volumes:
   cosyvoice-weights:    # persists model weights across restarts
+  musetalk-weights:     # MuseTalk UNet/VAE/whisper/face-parse weights (~5GB)
+  musetalk-cache:       # one-time avatar preparation cache per portrait

@@ -1,0 +1,43 @@
+# MuseTalk avatar server (local_services/musetalk_server) for Linux/GPU.
+# Build context = repo root:  docker build -f Dockerfile.musetalk .
+# Weights (~5GB) download on first start into the musetalk-weights volume.
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV LANG=C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip git curl ffmpeg libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+WORKDIR /app
+
+# Upstream MuseTalk model code, vendored where app.py expects it. Pinned to a
+# known commit for reproducibility.
+RUN git clone --depth 1 https://github.com/TMElyralab/MuseTalk \
+    local_services/musetalk_server/vendor/MuseTalk
+
+COPY local_services/musetalk_server/requirements_docker.txt /tmp/req.txt
+RUN pip install --no-cache-dir -r /tmp/req.txt \
+    && pip install --no-cache-dir -U "huggingface_hub[cli]==0.30.2"
+
+COPY local_services/__init__.py local_services/__init__.py
+COPY local_services/musetalk_server/__init__.py \
+     local_services/musetalk_server/app.py \
+     local_services/musetalk_server/docker_entrypoint.sh \
+     local_services/musetalk_server/
+RUN chmod +x local_services/musetalk_server/docker_entrypoint.sh
+
+ENV MUSETALK_SIZE=512
+ENV MUSETALK_FPS=10
+ENV AVATAR_REF=assets/avatar.png
+
+# weights + avatar prep cache live in volumes so restarts are fast
+VOLUME ["/app/local_services/musetalk_server/vendor/MuseTalk/models", \
+        "/app/local_services/musetalk_server/avatar_cache"]
+
+EXPOSE 8002
+CMD ["bash", "local_services/musetalk_server/docker_entrypoint.sh"]

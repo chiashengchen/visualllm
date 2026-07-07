@@ -1,0 +1,31 @@
+# MuseTalk server deps for the Linux/Docker deployment (GCP T4).
+# Curated from upstream MuseTalk requirements.txt minus training/demo-only
+# packages (tensorflow, tensorboard, gradio, moviepy) — the realtime server
+# only uses UNet + VAE + Whisper + face_alignment (no mmpose/DWPose).
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0
+
+diffusers==0.30.2
+accelerate==0.28.0
+transformers==4.39.2
+huggingface_hub==0.30.2
+
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+soundfile==0.12.1
+librosa==0.11.0
+einops==0.8.1
+omegaconf==2.3.0
+Pillow
+
+# 68-landmark face prep (replaces DWPose; pure torch, pip-only)
+face_alignment==1.4.1
+
+fastapi>=0.110
+uvicorn>=0.29
+websockets>=12
+loguru
+gdown
