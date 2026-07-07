@@ -61,7 +61,7 @@ services:
       - ./assets:/app/assets:ro    # portrait (AVATAR_REF) lives here, not in the image
     environment:
       MUSETALK_SIZE: "512"
-      MUSETALK_FPS: "10"     # conservative for the shared T4; raise if render keeps up
+      MUSETALK_FPS: "12"     # L4 keeps up at 12 (T4 could only do ~8)
       AVATAR_REF: assets/avatar.jpg
     deploy:
       resources:
@@ -101,7 +101,7 @@ services:
     environment:
       ENABLE_AVATAR: "1"
       AVATAR_URL: http://localhost:8002    # musetalk publishes 8002 on the host
-      MUSETALK_FPS: "10"    # MUST match the musetalk service fps (one fps everywhere)
+      MUSETALK_FPS: "12"    # MUST match the musetalk service fps (one fps everywhere)
       MUSETALK_SIZE: "512"
       AVATAR_MEMORY: "0"
       TTS_PROVIDER: cosyvoice
