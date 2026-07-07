@@ -23,13 +23,11 @@ else
   echo "[entrypoint] weights found at $MODELS"
 fi
 
-# Default portrait: fetch a synthetic face if none provided. Replace by mounting
-# your own image at the AVATAR_REF path (or baking one into assets/).
+# The portrait must be provided (mount it into the container at AVATAR_REF).
 REF="${AVATAR_REF:-assets/avatar.png}"
 if [ ! -f "/app/$REF" ] && [ ! -f "$REF" ]; then
-  echo "[entrypoint] no portrait at $REF — fetching a synthetic placeholder face"
-  mkdir -p "/app/$(dirname "$REF")"
-  curl -sL https://thispersondoesnotexist.com -o "/app/$REF" || true
+  echo "[entrypoint] ERROR: no portrait at $REF — mount an image there" >&2
+  exit 1
 fi
 
 cd /app

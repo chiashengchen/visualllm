@@ -15,10 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Upstream MuseTalk model code, vendored where app.py expects it. Pinned to a
-# known commit for reproducibility.
-RUN git clone --depth 1 https://github.com/TMElyralab/MuseTalk \
-    local_services/musetalk_server/vendor/MuseTalk
+# Upstream MuseTalk model code, vendored where app.py expects it.
+# Pinned to commit 0a89dec (2025-09-26) for reproducibility.
+RUN git clone https://github.com/TMElyralab/MuseTalk \
+    local_services/musetalk_server/vendor/MuseTalk \
+    && cd local_services/musetalk_server/vendor/MuseTalk \
+    && git checkout 0a89dec45a0192b824e3cf4daf96c239440c5ed8 \
+    && rm -rf .git
 
 COPY local_services/musetalk_server/requirements_docker.txt /tmp/req.txt
 RUN pip install --no-cache-dir -r /tmp/req.txt \

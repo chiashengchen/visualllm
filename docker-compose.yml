@@ -58,6 +58,7 @@ services:
     volumes:
       - musetalk-weights:/app/local_services/musetalk_server/vendor/MuseTalk/models
       - musetalk-cache:/app/local_services/musetalk_server/avatar_cache
+      - ./assets:/app/assets:ro    # portrait (AVATAR_REF) lives here, not in the image
     environment:
       MUSETALK_SIZE: "512"
       MUSETALK_FPS: "10"     # conservative for the shared T4; raise if render keeps up
