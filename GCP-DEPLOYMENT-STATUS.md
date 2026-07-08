@@ -13,12 +13,26 @@ _更新：2026-07-07。這份文件記錄 GCP VM 部署（**含 MuseTalk avatar*
 待使用者試聽定案 — 不行就刪 override 檔 + `docker compose up -d cosyvoice` 退回 PyTorch 模式。
 已知線索：vLLM 版同句話產出的音訊比 PyTorch 版長（8.6s vs 5.9s），疑似取樣參數差異。
 
-## 版本（git SHA）
+## 版本（git SHA，2026-07-07）
 
 | Repo | Commit | 說明 |
 |------|--------|------|
-| visualllm | `61b066d` | MUSETALK_FPS 10→12（L4 有餘裕） |
+| visualllm | `bef1da3` | docs 更新；功能面最後一筆是 `61b066d`（MUSETALK_FPS 10→12） |
 | CosyVoice | `b0d93c2` | 開機 warmup + vLLM stack 烤進 image（USE_VLLM 執行期切換） |
+
+**進度快照**：L4 東京上全套（語音+avatar）可用。vLLM 模式開著（override 檔），
+L4 空載 TTS 實測 RTF 0.37（20 字合成 3.1s），但**音質未過關** — vLLM 版音訊比
+PyTorch 版長 ~35%（20 字 8.0s vs 5.9s），聽感「不像中文」，根因鎖定為 vLLM 路徑
+缺 CosyVoice 原版的 RAS（repetition-aware sampling）→ 語音 token 重複 → 拖音。
+PyTorch 模式偶爾也有短句劣化（zero-shot 參考文字比合成文字長的已知警告）。
+
+**下一步（優先序）**：
+1. **取樣對齊** — 把 vLLM 路徑的 sampling 對齊原版 RAS（`cosyvoice/llm/llm.py` vllm 分支；
+   repetition penalty / top-k / 外層重抽），修好就能吃到 RTF 0.37 又不犧牲音質
+2. 短句劣化緩解 — 換短參考音檔（`VOICE_REF`/`VOICE_TEXT`）或 pipeline 端合併短句
+3. STT→LLM 提早啟動（interim/partial transcript 就開始生成）— 預估只省 0.2-0.5s，
+   因為 streaming STT 的 final 在 VAD 停止後幾乎立即出來；優先度低於 TTS 側
+4. L4 乾淨基準（音質定案後）
 
 ## 部署架構
 
