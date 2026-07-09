@@ -25,6 +25,10 @@ COPY local_services/cosyvoice_tts.py ./local_services/
 COPY local_services/weather_chain_llm.py ./local_services/
 COPY local_services/avatar_memory.py ./local_services/
 COPY local_services/musetalk_video.py ./local_services/
+COPY local_services/first_piece_aggregator.py ./local_services/
+COPY local_services/sherpa_stt.py ./local_services/
+COPY local_services/funasr_stt.py ./local_services/
+COPY local_services/nimbus_client/ ./local_services/nimbus_client/
 COPY log_setup.py .
 
 # Excluded (Windows-only or GPU-only):
