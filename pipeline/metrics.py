@@ -3,7 +3,7 @@
 TtfoMeter is a Pipecat FrameProcessor you drop into the pipeline. It measures
 Time-To-First-Output (TTFO): the gap between the user finishing their turn
 (UserStoppedSpeakingFrame) and the bot's first outgoing speech/video
-(BotStartedSpeakingFrame). This is the core acceptance metric — target < 8 s.
+(BotStartedSpeakingFrame). This is the core acceptance metric — target < 3 s.
 
 Place it once near the end of the pipeline so it sees both upstream user events
 and downstream bot events.
@@ -19,12 +19,13 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     Frame,
     UserStoppedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
 class TtfoMeter(FrameProcessor):
-    def __init__(self, target_s: float = 8.0):
+    def __init__(self, target_s: float = 3.0):
         super().__init__()
         self._target_s = target_s
         self._turn_end_t: float | None = None
@@ -33,8 +34,13 @@ class TtfoMeter(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, UserStoppedSpeakingFrame):
-            # User just finished talking — start the clock for this turn.
+        if isinstance(frame, (UserStoppedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            # User just finished talking — start the clock for this turn. We arm on EITHER
+            # frame: Deepgram + the transport's turn machinery emit UserStoppedSpeakingFrame,
+            # but the ASR-driven local STT (sherpa) drives turns with VADUserStoppedSpeakingFrame
+            # (a SystemFrame, NOT a subclass of UserStoppedSpeakingFrame) — without this the meter
+            # never armed on the sherpa path and reported count:0. When both fire (Deepgram), the
+            # later one wins; they mark the same instant, so the measurement is unchanged.
             self._turn_end_t = time.monotonic()
 
         elif isinstance(frame, BotStartedSpeakingFrame) and self._turn_end_t is not None:

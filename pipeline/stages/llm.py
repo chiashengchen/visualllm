@@ -22,9 +22,18 @@ def build_llm(cfg: Config, memory=None):
 
     from pipecat.services.openai.llm import OpenAILLMService
 
+    # Optionally pin OpenRouter to a fast backend (e.g. Groq): `Settings.extra` is merged
+    # verbatim into the create() call, and the OpenAI SDK forwards `extra_body` into the
+    # request JSON -- exactly where OpenRouter reads its `provider` routing hint. Empty knob
+    # -> no extra field -> today's unpinned behavior. (OPENROUTER_PROVIDER_ONLY)
+    extra = {}
+    if cfg.openrouter_provider_only:
+        providers = [p.strip() for p in cfg.openrouter_provider_only.split(",") if p.strip()]
+        extra = {"extra_body": {"provider": {"only": providers}}}
+
     # `model=` is deprecated; the model now lives in the `settings=` object.
     return OpenAILLMService(
         api_key=cfg.openrouter_api_key,
         base_url=cfg.openrouter_base_url,
-        settings=OpenAILLMService.Settings(model=cfg.openrouter_model),
+        settings=OpenAILLMService.Settings(model=cfg.openrouter_model, extra=extra),
     )

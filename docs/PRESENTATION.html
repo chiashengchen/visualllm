@@ -1,0 +1,644 @@
+<title>VisualLLm — Latency-First Talking-Head System</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500&display=swap');
+
+  :root{
+    --bg:#070a0e; --panel:#0d131a; --panel2:#111a22; --line:#1d2933; --line2:#283a47;
+    --ink:#dce7ef; --dim:#7c8b99; --faint:#54636f;
+    --go:#54e08c; --warn:#f4b03c; --stop:#ff6060; --cyan:#3ad9d2; --hot:#ff9a56; --violet:#9aa0ff;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --sans:'IBM Plex Sans','Noto Sans TC',system-ui,sans-serif;
+    --disp:'Chakra Petch','Noto Sans TC',sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:15px;line-height:1.62;-webkit-font-smoothing:antialiased;
+    background-image:
+      linear-gradient(var(--line) 1px,transparent 1px),
+      linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:44px 44px;background-position:center top;
+  }
+  body::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(1200px 600px at 78% -8%,rgba(58,217,210,.10),transparent 60%),
+      radial-gradient(900px 500px at 8% 12%,rgba(84,224,140,.06),transparent 55%),
+      linear-gradient(180deg,rgba(7,10,14,.55),rgba(7,10,14,.92));
+  }
+  .wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 26px}
+  zh,.zh{font-family:var(--sans)}
+
+  /* ---------- top nav ---------- */
+  nav{
+    position:sticky;top:0;z-index:50;backdrop-filter:blur(10px);
+    background:linear-gradient(180deg,rgba(7,10,14,.94),rgba(7,10,14,.72));
+    border-bottom:1px solid var(--line);
+  }
+  nav .wrap{display:flex;align-items:center;gap:22px;height:56px}
+  nav .brand{font-family:var(--disp);font-weight:700;letter-spacing:.5px;font-size:15px;color:var(--ink)}
+  nav .brand b{color:var(--go)}
+  nav .links{margin-left:auto;display:flex;gap:4px;flex-wrap:wrap}
+  nav a{
+    font-family:var(--mono);font-size:12px;letter-spacing:.3px;color:var(--dim);
+    text-decoration:none;padding:6px 11px;border-radius:6px;border:1px solid transparent;transition:.18s;
+  }
+  nav a:hover{color:var(--ink);background:var(--panel)}
+  nav a.on{color:var(--go);border-color:var(--line2);background:var(--panel)}
+
+  /* ---------- hero ---------- */
+  header{padding:88px 0 60px;border-bottom:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--cyan);margin-bottom:22px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(34px,6vw,66px);line-height:1.02;margin:0 0 10px;letter-spacing:-.5px}
+  h1 .flow{display:block;color:var(--dim);font-weight:500;font-size:clamp(15px,2.4vw,24px);letter-spacing:1px;margin-top:16px;font-family:var(--mono)}
+  h1 .flow b{color:var(--ink)}
+  .lede{max-width:660px;color:var(--dim);font-size:17px;margin:26px 0 32px}
+  .lede b{color:var(--ink);font-weight:600}
+  .badges{display:flex;gap:12px;flex-wrap:wrap}
+  .badge{
+    display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;
+    padding:9px 14px;border:1px solid var(--line2);border-radius:8px;background:var(--panel);color:var(--dim)
+  }
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:var(--go);box-shadow:0 0 10px var(--go)}
+  .badge b{color:var(--ink)}
+  .badge.big b{color:var(--go);font-size:15px}
+
+  /* ---------- section scaffolding ---------- */
+  section{padding:66px 0;border-bottom:1px solid var(--line)}
+  .sec-head{display:flex;align-items:baseline;gap:16px;margin-bottom:34px}
+  .sec-num{font-family:var(--mono);color:var(--cyan);font-size:13px;letter-spacing:1px;padding-top:6px}
+  h2{font-family:var(--disp);font-weight:600;font-size:clamp(24px,3.4vw,36px);margin:0;letter-spacing:-.3px}
+  .sec-sub{color:var(--dim);font-size:15px;margin-top:8px;max-width:640px}
+  h3{font-family:var(--disp);font-weight:600;font-size:18px;letter-spacing:.2px;margin:38px 0 16px;color:var(--ink);
+     display:flex;align-items:center;gap:10px}
+  h3::before{content:"";width:14px;height:2px;background:var(--go);display:inline-block}
+  p{margin:0 0 15px}
+  a.ref{color:var(--cyan);text-decoration:none;font-family:var(--mono);font-size:.92em;border-bottom:1px dotted var(--line2)}
+  code,.k{font-family:var(--mono);font-size:.88em;color:var(--hot);background:rgba(255,154,86,.08);
+    padding:1px 6px;border-radius:4px;border:1px solid rgba(255,154,86,.16)}
+
+  /* ---------- generic tables ---------- */
+  .tbl{width:100%;border-collapse:collapse;margin:8px 0 6px;font-size:13.5px}
+  .tbl th{
+    text-align:left;font-family:var(--mono);font-weight:500;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+    color:var(--dim);padding:10px 14px;border-bottom:1px solid var(--line2);background:var(--panel)
+  }
+  .tbl td{padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink)}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl td .why{color:var(--dim);font-size:12.5px;display:block;margin-top:3px}
+  .tbl .num{font-family:var(--mono);color:var(--cyan);white-space:nowrap}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .panel-pad{padding:20px 22px}
+
+  /* ---------- callout ---------- */
+  .call{
+    border-left:3px solid var(--warn);background:linear-gradient(90deg,rgba(244,176,60,.07),transparent 80%);
+    padding:16px 20px;border-radius:0 10px 10px 0;margin:22px 0;font-size:14px
+  }
+  .call.go{border-color:var(--go);background:linear-gradient(90deg,rgba(84,224,140,.07),transparent 80%)}
+  .call.stop{border-color:var(--stop);background:linear-gradient(90deg,rgba(255,96,96,.07),transparent 80%)}
+  .call b{color:var(--ink)}
+  .call .lbl{font-family:var(--mono);font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--warn);display:block;margin-bottom:6px}
+  .call.go .lbl{color:var(--go)} .call.stop .lbl{color:var(--stop)}
+
+  /* ---------- topology diagram ---------- */
+  .topo{display:grid;gap:0;margin:10px 0 8px}
+  .node{
+    border:1px solid var(--line2);border-radius:10px;background:var(--panel);padding:14px 16px;position:relative
+  }
+  .node .role{font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  .node .name{font-family:var(--disp);font-weight:600;font-size:15px}
+  .node .meta{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:4px}
+  .node .port{position:absolute;top:12px;right:14px;font-family:var(--mono);font-size:11px;color:var(--cyan)}
+  .cloud{border-style:dashed;border-color:var(--violet);background:rgba(154,160,255,.04)}
+  .cloud .role{color:var(--violet)}
+  .link{display:flex;align-items:center;justify-content:center;gap:10px;color:var(--dim);
+    font-family:var(--mono);font-size:11px;padding:9px 0;position:relative}
+  .link::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line2)}
+  .link span{background:var(--bg);padding:2px 10px;position:relative;z-index:1;border:1px solid var(--line);border-radius:20px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .gpu-bar{
+    margin-top:16px;border:1px solid var(--go);border-radius:10px;background:rgba(84,224,140,.06);
+    padding:14px 18px;display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:13px
+  }
+  .gpu-bar .chip{font-family:var(--disp);font-weight:700;color:var(--go);font-size:15px}
+  .gpu-bar .note{color:var(--dim);font-size:12px}
+
+  /* ---------- pipeline chain ---------- */
+  .chain{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:6px 0 4px}
+  .stage{
+    flex:1 1 120px;border:1px solid var(--line2);border-radius:9px;background:var(--panel);padding:11px 12px;position:relative
+  }
+  .stage .s{font-family:var(--disp);font-weight:600;font-size:14px}
+  .stage .p{font-family:var(--mono);font-size:10.5px;color:var(--dim);margin-top:3px;line-height:1.4}
+  .stage.vad{border-color:rgba(154,160,255,.4)} .stage.stt{border-color:rgba(58,217,210,.4)}
+  .stage.llm{border-color:rgba(58,217,210,.5)} .stage.tts{border-color:rgba(244,176,60,.5)}
+  .stage.avt{border-color:rgba(84,224,140,.5)}
+  .arrow{align-self:center;color:var(--faint);font-family:var(--mono);font-size:16px}
+
+  /* ---------- frame pump flow ---------- */
+  .pump{display:grid;gap:0;max-width:720px}
+  .pstep{border:1px solid var(--line2);border-radius:10px;background:var(--panel);padding:15px 18px;position:relative}
+  .pstep .t{font-family:var(--disp);font-weight:600;font-size:15px;display:flex;align-items:center;gap:10px}
+  .pstep .t .tag{font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--bg);
+    background:var(--dim);padding:2px 8px;border-radius:20px}
+  .pstep.w .t .tag{background:var(--hot)} .pstep.q .t .tag{background:var(--cyan)} .pstep.pm .t .tag{background:var(--go)}
+  .pstep .d{color:var(--dim);font-size:13px;margin-top:6px}
+  .pstep .d b{color:var(--ink)}
+  .pconn{height:26px;display:flex;justify-content:center;align-items:center;position:relative}
+  .pconn::before{content:"";width:1px;height:100%;background:var(--line2)}
+  .pconn .lab{position:absolute;background:var(--bg);border:1px solid var(--line);border-radius:20px;
+    font-family:var(--mono);font-size:10.5px;color:var(--dim);padding:2px 10px}
+  .frames3{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;font-family:var(--mono);font-size:12px}
+  .frames3 span{display:flex;align-items:center;gap:7px;color:var(--dim)}
+  .frames3 .g{width:9px;height:9px;border-radius:50%}
+  .g.real{background:var(--go)} .g.held{background:transparent;border:1.5px solid var(--dim)} .g.idle{background:var(--faint)}
+
+  /* ---------- TTFO waterfall ---------- */
+  .wf{margin:14px 0 6px}
+  .wf-scale{position:relative;height:20px;margin-bottom:4px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .wf-scale span{position:absolute;transform:translateX(-50%)}
+  .wf-track{position:relative;height:58px;border-radius:8px;overflow:hidden;border:1px solid var(--line2);background:var(--panel2);display:flex}
+  .seg{height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;
+    width:0;transition:width 1.1s cubic-bezier(.2,.8,.2,1);border-right:1px solid rgba(7,10,14,.5)}
+  .seg .sl{font-family:var(--mono);font-size:10.5px;color:rgba(7,10,14,.85);font-weight:600;white-space:nowrap;padding:0 6px}
+  .seg.llm{background:linear-gradient(180deg,#3ad9d2,#2ab8b2)} .seg.flush{background:#1f6b68}
+  .seg.tts{background:linear-gradient(180deg,#f4b03c,#e09a24)}
+  .seg.hold{background:linear-gradient(180deg,#54e08c,#38c072)}
+  .seg.mile{background:repeating-linear-gradient(45deg,#33424e,#33424e 7px,#2b3843 7px,#2b3843 14px)}
+  .seg.mile .sl{color:var(--dim)}
+  .wf-marks{position:relative;height:30px;margin-top:2px;font-family:var(--mono);font-size:11px}
+  .mk{position:absolute;top:0;transform:translateX(-50%);text-align:center;color:var(--dim)}
+  .mk::before{content:"";display:block;width:1px;height:10px;background:var(--dim);margin:0 auto 3px}
+  .mk.target::before{background:var(--go);height:64px;margin-top:-70px}
+  .mk.target{color:var(--go)}
+  .mk.ttfo::before{background:var(--ink)}
+  .wf-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:20px;font-family:var(--mono);font-size:11.5px;color:var(--dim)}
+  .wf-legend span{display:flex;align-items:center;gap:7px}
+  .wf-legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+
+  /* ---------- turn timeline ---------- */
+  .tl{border-left:1px solid var(--line2);margin:6px 0 6px 8px;padding-left:0}
+  .tev{position:relative;padding:0 0 20px 26px}
+  .tev::before{content:"";position:absolute;left:-5px;top:4px;width:9px;height:9px;border-radius:50%;
+    background:var(--panel);border:2px solid var(--dim)}
+  .tev.hot::before{border-color:var(--warn);background:var(--warn)}
+  .tev.big::before{border-color:var(--go);background:var(--go);box-shadow:0 0 12px var(--go)}
+  .tev .ts{font-family:var(--mono);font-size:12px;color:var(--cyan);font-weight:500}
+  .tev .ttl{font-weight:600;color:var(--ink);margin-top:1px}
+  .tev .dd{color:var(--dim);font-size:13px;margin-top:2px}
+  .tev .delta{font-family:var(--mono);font-size:11px;color:var(--faint);float:right}
+
+  /* ---------- method cards ---------- */
+  .methods{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:14px;margin-top:8px}
+  .m{border:1px solid var(--line);border-top:2px solid var(--go);border-radius:10px;background:var(--panel);padding:15px 16px}
+  .m.perc{border-top-color:var(--warn)}
+  .m .mh{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .m .st{font-family:var(--mono);font-size:10px;letter-spacing:.5px;text-transform:uppercase;padding:2px 7px;border-radius:20px;
+    background:rgba(84,224,140,.14);color:var(--go);white-space:nowrap}
+  .m.perc .st{background:rgba(244,176,60,.14);color:var(--warn)}
+  .m .mt{font-family:var(--disp);font-weight:600;font-size:14px;line-height:1.25}
+  .m .md{color:var(--dim);font-size:12.5px;margin-top:2px}
+  .m .win{font-family:var(--mono);font-size:11.5px;color:var(--cyan);margin-top:9px;display:block}
+
+  /* ---------- dead ends ---------- */
+  .dead .tbl td:first-child{font-family:var(--disp);font-weight:600}
+  .verdict{font-family:var(--mono);font-size:11px;color:var(--stop);white-space:nowrap}
+
+  footer{padding:44px 0 70px;color:var(--faint);font-family:var(--mono);font-size:12px}
+  footer a{color:var(--dim);text-decoration:none;border-bottom:1px dotted var(--line2)}
+  .reveal{opacity:0;transform:translateY(16px);transition:.7s cubic-bezier(.2,.8,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+  @media(max-width:620px){
+    .row2{grid-template-columns:1fr}.sec-head{flex-direction:column;gap:4px}
+    nav .links{display:none}
+  }
+</style>
+
+<nav>
+  <div class="wrap">
+    <div class="brand">Visual<b>LLm</b></div>
+    <div class="links">
+      <a href="#spec">01 · Device</a>
+      <a href="#workflow">02 · Workflow</a>
+      <a href="#ttfo">03 · TTFO</a>
+      <a href="#minimize">04 · Minimize</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">Real-time · Streaming · Local-first</div>
+    <h1>
+      Speech in, a talking face out — in under three seconds.
+      <span class="flow">mic → <b>STT</b> → <b>LLM</b> → <b>TTS</b> → <b>photoreal avatar</b> → browser</span>
+    </h1>
+    <p class="lede">
+      You speak; the system transcribes you, an LLM answers, the answer is spoken in a cloned voice, and a
+      GPU renders a <b>photoreal, lip-synced face</b> saying it back — multi-turn, fully streaming over WebRTC.
+      Everything heavy runs <b>locally on one Windows box</b>. The whole engineering story is one number:
+      <b>time-to-first-output</b>.
+    </p>
+    <div class="badges">
+      <div class="badge big"><span class="dot"></span>TTFO&nbsp;<b>&lt; 3&nbsp;s</b></div>
+      <div class="badge">Target language&nbsp;<b>Mandarin&nbsp;(zh-TW)</b></div>
+      <div class="badge">Framework&nbsp;<b>Pipecat 1.3</b></div>
+      <div class="badge">One shared&nbsp;<b>16&nbsp;GB GPU</b></div>
+    </div>
+  </div>
+</header>
+
+<!-- ==================== 01 DEVICE ==================== -->
+<section id="spec">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-num">01</div>
+      <div>
+        <h2>Device specification</h2>
+        <div class="sec-sub">Everything heavy is local. The one hard constraint: a single GPU with ≥16 GB VRAM,
+          because the TTS engine and the avatar renderer share that one card.</div>
+      </div>
+    </div>
+
+    <h3 class="reveal">Hardware</h3>
+    <div class="panel reveal">
+      <table class="tbl">
+        <thead><tr><th style="width:34%">Requirement</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td><b>1 NVIDIA GPU · ≥16 GB VRAM</b><span class="why">dev box: RTX 5060 Ti 16 GB · Blackwell <code>sm_120</code></span></td>
+              <td>CosyVoice (vLLM) <b>and</b> MuseTalk share one card. Below ~16 GB they fight for VRAM → the avatar stalls or TTS fails to load.</td></tr>
+          <tr><td><b>Windows 11</b></td><td>Pipeline + MuseTalk avatar + config panel all run on Windows.</td></tr>
+          <tr><td><b>WSL2 (Ubuntu)</b></td><td>Hosts the fast vLLM TTS path. The Windows NVIDIA driver provides CUDA inside WSL2 — no separate Linux driver. A Windows-only fallback runs ~3× slower on first audio.</td></tr>
+          <tr><td><b>~20 GB free disk</b></td><td>CosyVoice2-0.5B (~2 GB), MuseTalk + face weights, the TensorRT engine cache (~1.75 GB), optional models.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="reveal">Software environments</h3>
+    <p class="reveal" style="color:var(--dim);font-size:14px">The heavy stages are deliberately <b style="color:var(--ink)">separate processes in separate environments</b> — each needs its own GPU/Python setup, and isolating them stops one crash from taking the others down.</p>
+    <div class="panel reveal">
+      <table class="tbl">
+        <thead><tr><th>Environment</th><th>Where</th><th>Runs</th></tr></thead>
+        <tbody>
+          <tr><td><code>cosyvllm</code> conda env</td><td>WSL Ubuntu</td><td>CosyVoice2 TTS on vLLM <span class="num">:8001</span></td></tr>
+          <tr><td><code>musetalk</code> conda env</td><td>Windows</td><td>MuseTalk avatar GPU server <span class="num">:8002</span></td></tr>
+          <tr><td>system Python 3.11 <span class="why">has Pipecat — not a conda env</span></td><td>Windows</td><td>the pipeline + web client <span class="num">:7860</span></td></tr>
+          <tr><td>Miniconda ×2</td><td>Windows + WSL</td><td>provisions the two conda envs</td></tr>
+          <tr><td><i>opt.</i> <code>moss-tts</code> conda env</td><td>Windows</td><td>alternative MOSS TTS <span class="num">:8003</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="row2" style="margin-top:26px">
+      <div>
+        <h3 class="reveal">Cloud accounts <span style="font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400">both free-tier · both optional</span></h3>
+        <div class="panel reveal">
+          <table class="tbl">
+            <thead><tr><th>Service</th><th>Stage</th></tr></thead>
+            <tbody>
+              <tr><td><b>Deepgram</b></td><td>default STT (en / zh-TW / th)</td></tr>
+              <tr><td><b>OpenRouter</b></td><td>LLM (pinned to Groq)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="reveal" style="font-size:12.5px;color:var(--faint);font-family:var(--mono);margin-top:10px">
+          Both cloud hops are optional: <code>STT_PROVIDER=sherpa</code> runs STT offline on the CPU; the LLM can point at a local Ollama.</p>
+      </div>
+      <div>
+        <h3 class="reveal">The central constraint</h3>
+        <div class="call go reveal">
+          <span class="lbl">One shared 16 GB GPU</span>
+          <b>MuseTalk (Windows) and CosyVoice's vLLM (WSL) share ONE card.</b> This single fact drives most of the system's hard decisions:
+          <ul style="margin:10px 0 0;padding-left:18px;color:var(--dim);font-size:13px">
+            <li><b style="color:var(--ink)">Load order:</b> start CosyVoice <b style="color:var(--ink)">before</b> MuseTalk — vLLM needs the card mostly free at load.</li>
+            <li><b style="color:var(--ink)">Turn-start contention:</b> both burst the GPU at once — the historic root of "mouth moves before the voice."</li>
+            <li>The only guaranteed cure for the residual ~0.5–1.5 s is a <b style="color:var(--ink)">dedicated avatar GPU</b> (working set ~4.8 GB).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 02 WORKFLOW ==================== -->
+<section id="workflow">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-num">02</div>
+      <div>
+        <h2>Workflow</h2>
+        <div class="sec-sub">Three processes plus a browser. The browser only ever talks to the pipeline; the pipeline orchestrates the cloud, the TTS, and the avatar.</div>
+      </div>
+    </div>
+
+    <h3 class="reveal">Process topology</h3>
+    <div class="reveal">
+      <div class="node cloud" style="margin-bottom:0">
+        <div class="role">Cloud (US)</div>
+        <div class="name">Deepgram STT (nova-2) &nbsp;·&nbsp; OpenRouter LLM → Groq (llama-4-scout)</div>
+        <div class="meta">wss: mic audio → text&nbsp;&nbsp;·&nbsp;&nbsp;https: prompt → streamed tokens</div>
+      </div>
+      <div class="link"><span>↑↓ &nbsp;STT + LLM hops</span></div>
+      <div class="node" style="border-color:var(--cyan)">
+        <span class="port">:7860</span>
+        <div class="role">Pipeline · system Python 3.11 · Pipecat</div>
+        <div class="name">VAD → STT → LLM → TTS → avatar glue</div>
+        <div class="meta">owns the WebRTC connection · serves /client/ · ◄──► browser (mic up · A+V down)</div>
+      </div>
+      <div class="link"><span>HTTP /tts/stream · text → PCM &nbsp;&nbsp;|&nbsp;&nbsp; ws :8002 · PCM up / frames down</span></div>
+      <div class="row2">
+        <div class="node" style="border-color:var(--warn)">
+          <span class="port">:8001</span>
+          <div class="role">CosyVoice2 TTS</div>
+          <div class="name">vLLM · cosyvllm env</div>
+          <div class="meta">WSL Ubuntu · sentence text → 16 kHz voice</div>
+        </div>
+        <div class="node" style="border-color:var(--go)">
+          <span class="port">:8002</span>
+          <div class="role">Avatar</div>
+          <div class="name">MuseTalk · musetalk env</div>
+          <div class="meta">TensorRT lip-sync → RGB frames + video_* markers</div>
+        </div>
+      </div>
+      <div class="gpu-bar">
+        <span class="chip">▼ ONE 16 GB GPU · 5060 Ti</span>
+        <span class="note">both TTS (vLLM) and avatar (MuseTalk) are GPU processes on the same card — the central constraint (§01)</span>
+      </div>
+    </div>
+
+    <h3 class="reveal">One turn, end to end</h3>
+    <p class="reveal" style="color:var(--dim);font-size:14px">A linear Pipecat pipeline — but <b style="color:var(--ink)">each stage starts emitting before the last finishes</b>, so they overlap in time:</p>
+    <div class="chain reveal">
+      <div class="stage vad"><div class="s">VAD</div><div class="p">Silero · detects you stop</div></div>
+      <div class="arrow">→</div>
+      <div class="stage stt"><div class="s">STT</div><div class="p">Deepgram / sherpa · audio→text</div></div>
+      <div class="arrow">→</div>
+      <div class="stage llm"><div class="s">LLM</div><div class="p">Groq · sentence-by-sentence</div></div>
+      <div class="arrow">→</div>
+      <div class="stage tts"><div class="s">TTS</div><div class="p">CosyVoice2 · text→voice</div></div>
+      <div class="arrow">→</div>
+      <div class="stage avt"><div class="s">Avatar</div><div class="p">MuseTalk · voice→lip-sync</div></div>
+    </div>
+    <div class="call go reveal">
+      <span class="lbl">Why the overlap matters</span>
+      The LLM's <b>first sentence</b> reaches TTS before the full answer exists, and TTS's <b>first audio chunk</b> reaches
+      the avatar immediately. Chained naïvely — each stage waiting for the last — four heavy models in series would take
+      <b>15–30 s</b> per turn. Streaming overlap plus an LLM pre-warm collapse that to ~3 s.
+    </div>
+
+    <h3 class="reveal">A/V synchronization — <code>steady</code> vs <code>live</code></h3>
+    <div class="row2 reveal">
+      <div class="call go" style="margin:0">
+        <span class="lbl">steady · default · video-master</span>
+        Voice is buffered and released <b>paced to the server's real rendered frames</b>, so it waits when the render
+        stalls and never drifts ahead — a synced start (the user's pick). <span style="color:var(--dim)">Tradeoff: a long render stall briefly pauses the voice, then resumes clean.</span>
+      </div>
+      <div class="call stop" style="margin:0">
+        <span class="lbl">live · audio-master · rejected</span>
+        Voice forwarded immediately so it can never freeze; lips best-effort (~0.75 s trail). <b>Rejected by the user</b> — voice leading the lips by 1–2 s is worse than an occasional pause.
+      </div>
+    </div>
+    <p class="reveal" style="font-size:13px;color:var(--faint);font-family:var(--mono);margin-top:14px">
+      Load-bearing: <code>video_out_is_live = not avatar_sync_with_audio</code> · one fps everywhere (server stride = client clock = video_out_framerate = <code>MUSETALK_FPS</code>) or A/V drift.
+    </p>
+
+    <h3 class="reveal">How the avatar posts frames</h3>
+    <p class="reveal" style="color:var(--dim);font-size:14px">WebRTC and mobile decoders <b style="color:var(--ink)">freeze on bursty input</b>, so delivery is decoupled from rendering: a GPU worker <i>produces</i> frames in bursts; a pump <i>emits</i> them at a rock-steady rate.</p>
+    <div class="pump reveal">
+      <div class="pstep w">
+        <div class="t"><span class="tag">GPU</span>Render worker</div>
+        <div class="d">Buffers the incoming voice, runs UNet+VAE on <b>fixed 8-frame segments</b> (each ceil-sized to exactly cover its audio). <b>Bursty</b> — fast when free, stalls under contention.</div>
+      </div>
+      <div class="pconn"><span class="lab">push rendered RGB frames</span></div>
+      <div class="pstep q">
+        <div class="t"><span class="tag">buffer</span>out_q · bounded queue (~600)</div>
+        <div class="d">A smaller cap makes the render <b>skip stale frames</b> instead of letting the lips fall arbitrarily behind — <code>MUSETALK_OUT_Q</code> is the safe lag lever.</div>
+      </div>
+      <div class="pconn"><span class="lab">drain ONE per tick</span></div>
+      <div class="pstep pm">
+        <div class="t"><span class="tag">pace</span>Pump · steady 1/fps loop</div>
+        <div class="d">Emits <b>exactly one frame every tick — never a burst.</b> So the stream never gaps (a single skipped send <i>is</i> a visible freeze).</div>
+        <div class="frames3">
+          <span><i class="g real"></i>fresh rendered frame <b style="color:var(--dim)">(normal)</b></span>
+          <span><i class="g held"></i>held repeat <b style="color:var(--dim)">(render hiccup)</b></span>
+          <span><i class="g idle"></i>idle / neutral <b style="color:var(--dim)">(between turns)</b></span>
+        </div>
+      </div>
+      <div class="pconn"><span class="lab">ws.send_bytes(frame) &nbsp;+&nbsp; control markers</span></div>
+      <div class="pstep">
+        <div class="t"><span class="tag">client</span>Browser · /client/</div>
+        <div class="d">Releases the buffered <b>voice paced to <code>video_clock</code></b>: render stalls ⇒ frame count freezes ⇒ the voice waits with it, so audio can never run ahead of the lips.</div>
+      </div>
+    </div>
+    <div class="panel reveal" style="margin-top:18px">
+      <table class="tbl">
+        <thead><tr><th>Marker</th><th>When</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td class="num">video_start</td><td>first <b>real</b> rendered frame drains</td><td>the lip-synced segment has begun</td></tr>
+          <tr><td class="num">video_clock{N}</td><td>every ~2 real frames</td><td>N = count of <b>truly rendered</b> frames — not held / idle</td></tr>
+          <tr><td class="num">video_end</td><td>turn really over (speech_end + queue drained)</td><td>segment finished</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="reveal" style="font-size:13px;color:var(--faint);font-family:var(--mono);margin-top:12px">
+      Readiness prime: the pump waits until <code>MUSETALK_LEAD_FRAMES</code>=14 are buffered before draining — the cushion that absorbs hiccups, and the structural ~0.5 s "avatar readiness hold" in the TTFO budget →
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 03 TTFO ==================== -->
+<section id="ttfo">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-num">03</div>
+      <div>
+        <h2>TTFO in detail</h2>
+        <div class="sec-sub"><b style="color:var(--ink)">Time-to-first-output</b> — from <code>UserStoppedSpeakingFrame</code> (you go quiet) to <code>BotStartedSpeakingFrame</code> (the avatar starts speaking). The bar is &lt; 3 s.</div>
+      </div>
+    </div>
+
+    <div class="call reveal">
+      <span class="lbl">Because it streams, TTFO is not a sum of stages</span>
+      <b style="font-family:var(--mono);color:var(--go)">TTFO ≈ VAD hold + LLM first-token + TTS first-chunk + avatar readiness</b>
+    </div>
+
+    <h3 class="reveal">Where the time goes</h3>
+    <div class="panel reveal">
+      <table class="tbl">
+        <thead><tr><th style="width:38%">Component</th><th style="width:22%">Cost</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>VAD end-of-turn hold</td><td class="num">~0.5 s</td><td>configured silence before a turn "ends"</td></tr>
+          <tr><td>STT</td><td class="num">~0.1–0.3 s</td><td>streams as you speak — overlaps, ~free</td></tr>
+          <tr><td>LLM first-token</td><td class="num" style="color:var(--go)">~0.7–0.9 s</td><td>Groq pin killed the 7–8 s transpacific tail</td></tr>
+          <tr><td><b>CosyVoice first-chunk</b></td><td class="num" style="color:var(--warn)">~1.3–2.1 s</td><td><b>dominant + most variable</b> — scales with the first sentence's length</td></tr>
+          <tr><td>Avatar readiness hold</td><td class="num">~0.45–0.8 s</td><td>the structural lead=14 cushion fill (not GPU-starved)</td></tr>
+          <tr><td style="border-top:1px solid var(--line2)"><b>End-to-end TTFO</b></td><td class="num" style="border-top:1px solid var(--line2);color:var(--ink)">en 2.0–2.5&nbsp;s<br>zh 2.2–3.1&nbsp;s</td><td style="border-top:1px solid var(--line2)">long-opener zh turns still tail over 3 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="reveal">A real measured turn — to the user's ear</h3>
+    <p class="reveal" style="color:var(--dim);font-size:13.5px">
+      <code>scripts/measure.py</code> · 2026-07-06 15:09 · RTX 5060 Ti · <code>LANGUAGE=zh</code>.
+      Q: <span class="zh" style="color:var(--ink)">「什麼是人工智慧？請用一句話簡短回答。」</span>
+      A: <span class="zh" style="color:var(--ink)">「就是電腦模擬人腦思考。您想了解更多嗎？」</span>
+      Every timestamp is a real anchor from <code>pipeline.log</code>.
+    </p>
+
+    <div class="panel panel-pad reveal">
+      <div class="wf" id="wf">
+        <div class="wf-scale">
+          <span style="left:0%">0 s</span><span style="left:20.4%">1 s</span><span style="left:40.9%">2 s</span>
+          <span style="left:61.3%">3 s</span><span style="left:81.8%">4 s</span><span style="left:100%">4.9 s</span>
+        </div>
+        <div class="wf-track">
+          <div class="seg llm"   data-w="21.8"><span class="sl">LLM 1.07 s</span></div>
+          <div class="seg flush" data-w="0.25"></div>
+          <div class="seg tts"   data-w="17.9"><span class="sl">TTS 0.88 s</span></div>
+          <div class="seg hold"  data-w="19.3"><span class="sl">hold 0.95 s</span></div>
+          <div class="seg mile"  data-w="40.7"><span class="sl">last mile 1.99 s (remote)</span></div>
+        </div>
+        <div class="wf-marks">
+          <div class="mk target" style="left:61.3%">3 s target</div>
+          <div class="mk ttfo" style="left:59.3%">TTFO 2.9 s</div>
+          <div class="mk" style="left:100%">ear 4.9 s</div>
+        </div>
+      </div>
+      <div class="wf-legend">
+        <span><i style="background:#3ad9d2"></i>LLM first token</span>
+        <span><i style="background:#f4b03c"></i>TTS first chunk</span>
+        <span><i style="background:#54e08c"></i>steady lead-hold</span>
+        <span><i style="background:#33424e"></i>last mile (transport + net + playout)</span>
+      </div>
+    </div>
+
+    <div class="row2" style="margin-top:26px">
+      <div class="reveal">
+        <h3 style="margin-top:0">Timeline</h3>
+        <div class="tl">
+          <div class="tev"><span class="ts">−2.0 → 0 s</span><div class="ttl">User speaking</div><div class="dd">Deepgram streams the mic live — STT overlaps the whole utterance.</div></div>
+          <div class="tev big"><span class="ts">t0 = 0.000 s</span><div class="ttl">User STOPPED → the stopwatch starts</div><div class="dd">VAD + turn-analyzer agree; STT flushes the final transcript.</div></div>
+          <div class="tev hot"><span class="delta">+1.066</span><span class="ts">1.066 s</span><div class="ttl">LLM emits first token</div><div class="dd">OpenRouter TTFB — the transpacific hop (unpinned this run; the Groq pin cuts it to ~0.8 s).</div></div>
+          <div class="tev"><span class="delta">+0.012</span><span class="ts">1.078 s</span><div class="ttl">TTS receives sentence 1</div><div class="dd zh">「就是電腦模擬人腦思考。」 flushed early.</div></div>
+          <div class="tev hot"><span class="delta">+0.875</span><span class="ts">1.953 s</span><div class="ttl">TTS emits first voice chunk</div><div class="dd">CosyVoice TTFB 0.874 s — the single biggest slice of TTFO. MuseTalk receives it instantly.</div></div>
+          <div class="tev big"><span class="delta">+0.945</span><span class="ts">2.898 s</span><div class="ttl">Bot started speaking → TTFO 2.9 s ✓</div><div class="dd">avatar readiness / steady lead-hold. Target 3 s.</div></div>
+          <div class="tev"><span class="delta">+1.99</span><span class="ts">~4.89 s</span><div class="ttl">Remote browser plays the voice</div><div class="dd">last mile — network-dominated over Tailscale.</div></div>
+        </div>
+      </div>
+      <div class="reveal">
+        <h3 style="margin-top:0">The reads</h3>
+        <div class="call go" style="margin-top:0">
+          <span class="lbl">Parallel synthesis</span>
+          Sentence 2 <span class="zh">「您想了解更多嗎？」</span> is synthesized <b>in parallel</b> (1.96 → 2.83 s) while sentence 1 already plays — so it costs TTFO nothing. That is the payoff of sentence streaming.
+        </div>
+        <div class="call">
+          <span class="lbl">The two dominant costs = the two attacks</span>
+          Inside the pipeline the LLM first token (<b>1.07 s</b>, unpinned here) and the CosyVoice first chunk (<b>0.875 s</b>) dominate — exactly what §04 targets. Pinned to Groq, this turn lands nearer <b>~2.2 s</b>.
+        </div>
+        <div class="call stop">
+          <span class="lbl">The +1.99 s is a remote number</span>
+          Viewed over Tailscale, the last mile is network / jitter-buffer bound and <b>swings with the link</b> (0.94 s one run, 1.99 s another). A <b>local</b> viewer's last mile is far smaller (~0.15–0.8 s). The pipeline is not the lever there.
+        </div>
+      </div>
+    </div>
+    <p class="reveal" style="font-size:13px;color:var(--faint);font-family:var(--mono);margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
+      Measurement law (twice-proven): A/B on the <b style="color:var(--dim)">live full stack</b> only, and <b style="color:var(--dim)">the user's live eye is the final gate</b> — the offline probe has passed configs the eye then rejected.
+    </p>
+  </div>
+</section>
+
+<!-- ==================== 04 MINIMIZE ==================== -->
+<section id="minimize">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="sec-num">04</div>
+      <div>
+        <h2>What we do to minimize TTFO</h2>
+        <div class="sec-sub">Grouped by what they attack. <span style="color:var(--go)">■</span> shipped &nbsp; <span style="color:var(--warn)">■</span> perception win &nbsp; <span style="color:var(--stop)">■</span> honest dead-end. <code>Px</code> = the entry in PROBLEMS-AND-FIXES.</div>
+      </div>
+    </div>
+
+    <div class="methods reveal">
+      <div class="m"><div class="mh"><span class="st">shipped</span></div><div class="mt">A · Architectural overlap</div><div class="md">Sentence streaming + LLM connect-time pre-warm + snappy VAD stop. Without it the pipeline is 15–30 s.</div><span class="win">the foundation — turns 15–30 s into ~3 s</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P21</span></div><div class="mt">B · Groq pin — kill the LLM cloud hop</div><div class="md">Pin OpenRouter to a fast backend (<code>=Groq</code>, <code>llama-4-scout</code>). Killed the 7–8 s transpacific tail.</div><span class="win">zh 1.64 → 0.80 s · en 1.07 → 0.67 s · ~5× cheaper</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P6</span></div><div class="mt">C · CosyVoice on vLLM in WSL</div><div class="md">Run CosyVoice2's autoregressive LLM on vLLM — the original lip-lag root cause.</div><span class="win">TTS first chunk 3.4 s → ~1.1 s</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P23</span></div><div class="mt">D · First-piece / first-clause splits</div><div class="md">TTFB scales with input length, so emit a short opening clause first. en splits on comma/space; zh on full-width ，；： only (never mid-word).</div><span class="win">en TTFO 4.6→3.2 s · zh 4.78→3.08 s</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P18</span></div><div class="mt">E · RAS restored + "pro" voice</div><div class="md">vLLM had dropped Repetition-Aware Sampling → zh looped on the silence token (~40 %). Reinstated as a logits processor; swapped to a fluid reference clip.</div><span class="win">killed 4 s → 12 s zh blowups</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P16</span></div><div class="mt">F · TensorRT render</div><div class="md">Long-turn lip drift was shared-GPU contention. TRT UNet+VAE holds ~12 fps under load.</div><span class="win">389 → 255 ms/seg · drift +0.36 s vs +3.94 s PyTorch</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P17</span></div><div class="mt">G · GPU composite</div><div class="md">Move the per-frame mask-blend onto the GPU (VAE output is already a tensor). Pixel-identical (SSIM 1.0).</div><span class="win">73 → 11 ms/seg · reserve headroom + freed CPU</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P1</span></div><div class="mt">H · cudnn.benchmark = False</div><div class="md">With it on, cuDNN re-autotuned the turn-start segment → a ~16 s GPU spike on the first segment of every turn.</div><span class="win">lips ~5 s late → gone</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P2</span></div><div class="mt">I · Feed burst</div><div class="md">Burst the first 1 s of a turn's audio un-paced so the renderer isn't starved at turn start.</div><span class="win">lip-start lag ~1.9 s → ~0.8 s</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P9/P10</span></div><div class="mt">J · Ceil-sized segments</div><div class="md">Size each render segment to the frame's upper sample boundary so the renderer yields exactly N frames for any fps.</div><span class="win">"lips finish 1–2 s early" → fixed</span></div>
+      <div class="m"><div class="mh"><span class="st">shipped · P29</span></div><div class="mt">K · Local sherpa STT</div><div class="md">Opt-in offline STT on the CPU (~0 VRAM), removing the Deepgram round-trip.</div><span class="win">one cloud hop → zero</span></div>
+      <div class="m perc"><div class="mh"><span class="st">perception · P26</span></div><div class="mt">L · Filler-word opener</div><div class="md">Open the turn on a rotated <span class="zh">「嗯，讓我想一下喔…」</span> synthesized through the normal TTS path. <b style="color:var(--warn)">Honest:</b> TTFO counts time-to-first-<i>sound</i>, and that sound is the filler — the real answer arrives slightly later.</div><span class="win" style="color:var(--warn)">avatar starts ~0.7 s sooner (feel, not speed)</span></div>
+    </div>
+
+    <h3 class="reveal">Honest dead-ends &amp; rejected levers</h3>
+    <p class="reveal" style="color:var(--dim);font-size:13.5px">Recorded with the same rigor as the wins, so they're never re-tried. Every one was measured, not guessed.</p>
+    <div class="panel dead reveal">
+      <table class="tbl">
+        <thead><tr><th style="width:30%">Lever</th><th style="width:14%">Verdict</th><th>Why (measured)</th></tr></thead>
+        <tbody>
+          <tr><td>vLLM CUDA graphs <span class="why">P27 / P33</span></td><td class="verdict">✗ eager</td><td>Faster on the TTS stopwatch but <b>degrades zh lipsync</b> — the graph decode perturbs the zh-critical RAS sampling, so the mouth stops tracking phonemes. <i>The probe passes what the eye rejects (3×).</i></td></tr>
+          <tr><td>FIRST_HOP small opening chunk <span class="why">P19 / P22</span></td><td class="verdict">✗ → 0</td><td>Isolated TTFB win <b>erased live</b> — the small chunk fills the lead=14 cushion slowly → the steady-hold balloons.</td></tr>
+          <tr><td>LEAD_FRAMES &lt; 14 <span class="why">P19 / P22</span></td><td class="verdict">✗ closed</td><td>lead=8 measured the first all-under-3 s config, <b>but the user's live eye rejected every value below 14</b> — delay or freezes. The probe misses what the eye catches.</td></tr>
+          <tr><td>FP8 quantization of the UNet <span class="why">P20</span></td><td class="verdict">✗ dead</td><td>Quality perfect (SSIM 0.99997) but <b>4.5× slower</b> — TRT 10.13 has no FP8-conv kernels for Blackwell <code>sm_120</code>.</td></tr>
+          <tr><td>Flow-matching TensorRT <span class="why">P28</span></td><td class="verdict">✗ no win</td><td>Builds &amp; runs but <b>zero TTFB win + 26–40 % slower</b> — the flow isn't the first-chunk bottleneck; TRT's per-chunk hard-syncs swamp the fusion.</td></tr>
+          <tr><td>GPU stream priority <span class="why">P25</span></td><td class="verdict">✗ WDDM</td><td>Catastrophic live (TTFO ~12 s) — cross-process CUDA priority needs Linux MPS; Windows WDDM thrashes across the WSL/Windows boundary.</td></tr>
+          <tr><td>CosyVoice turn-start throttle <span class="why">P25</span></td><td class="verdict">✗ useless</td><td>The TRT render is <b>not</b> GPU-starved at turn start — both P20 levers chased a non-bottleneck.</td></tr>
+          <tr><td>Sync mode = live <span class="why">P7</span></td><td class="verdict">✗ user</td><td>Voice leads the lips 1–2 s — worse than steady's occasional pause.</td></tr>
+          <tr><td>zh leading-breath trim <span class="why">P34</span></td><td class="verdict">✗ crashed</td><td>Offline-clean but crashed live (<code>np.frombuffer</code> on aiohttp's odd chunks). Any retry must trim server-side in CosyVoice.</td></tr>
+          <tr><td>Local CPU-pinned Ollama LLM</td><td class="verdict">✗ cloud</td><td>CPU contention with the memory harness made end-to-end latency <b>worse</b> + fragmented zh.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="call go reveal" style="margin-top:26px">
+      <span class="lbl">The through-line</span>
+      On a single shared GPU, most latency levers that win in isolation lose in the live system, and the human eye
+      is the final gate the objective probes repeatedly fail. The two remaining levers, honestly:
+      <b>(1)</b> shrink the TTS first-chunk further — input-splitting is near its floor, the compute side is capped by the zh-lipsync/RAS constraint;
+      <b>(2)</b> a <b>dedicated avatar GPU</b> — the only guaranteed structural cure for the residual shared-GPU cost.
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    VisualLLm · latency-first real-time avatar · source of truth: <a href="../STATUS.md">STATUS.md</a> ·
+    <a href="../WORKFLOW.md">WORKFLOW.md</a> · <a href="PROBLEMS-AND-FIXES.md">PROBLEMS-AND-FIXES.md</a> (P1–P36) ·
+    numbers from <a href="measure_data.js">measure_data.js</a>
+  </div>
+</footer>
+
+<script>
+  // reveal on scroll
+  const io = new IntersectionObserver((es)=>{
+    es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);} });
+  },{threshold:.12});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+  // grow the waterfall when it scrolls into view
+  const wf = document.getElementById('wf');
+  const wio = new IntersectionObserver((es)=>{
+    es.forEach(e=>{ if(e.isIntersecting){
+      wf.querySelectorAll('.seg').forEach(s=>{ s.style.width = s.dataset.w + '%'; });
+      wio.disconnect();
+    }});
+  },{threshold:.4});
+  if(wf) wio.observe(wf);
+
+  // active nav link on scroll
+  const links = [...document.querySelectorAll('nav a')];
+  const secs = links.map(a=>document.querySelector(a.getAttribute('href')));
+  const nio = new IntersectionObserver((es)=>{
+    es.forEach(e=>{ if(e.isIntersecting){
+      const i = secs.indexOf(e.target);
+      links.forEach(l=>l.classList.remove('on'));
+      if(links[i]) links[i].classList.add('on');
+    }});
+  },{rootMargin:'-45% 0px -50% 0px'});
+  secs.forEach(s=>s&&nio.observe(s));
+</script>

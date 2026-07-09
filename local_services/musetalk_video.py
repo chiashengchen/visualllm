@@ -97,23 +97,8 @@ class MuseTalkVideoService(FrameProcessor):
         self._mode = (os.getenv("MUSETALK_SYNC_MODE", "steady") or "steady").lower()
         self._sync = self._mode in ("steady", "prerender") and (
             os.getenv("MUSETALK_SYNC_WITH_AUDIO", "1") or "1").lower() in ("1", "true", "yes", "on")
-        self._lead_s = float(os.getenv("MUSETALK_SYNC_LEAD_S", "0.0"))
         self._fallback_s = float(os.getenv("MUSETALK_SYNC_FALLBACK_S", "10.0"))
-        # Lag cap (default OFF). The voice is released paced to frames AS they arrive, so when
-        # the server sustains its fps the voice already tracks real-time and no cap is needed.
-        # This only helps if the render genuinely sustains BELOW realtime; it keys off buffered
-        # audio (which TTS fills ahead), so leave it 0 unless a slow GPU truly falls behind --
-        # a positive value will skip frames (choppy) to keep the voice from lagging.
-        # 0 = never skip (deadlock-proof; voice real-time, lips best-effort). A positive value
-        # is experimental: MuseTalk renders in ~0.4s segments so the skip can stall the lips.
-        self._max_lag = float(os.getenv("MUSETALK_SYNC_MAX_LAG", "0"))
         self._last_hold_log = 0.0
-        # live (audio-master) bookkeeping: audio SENT to the server for lip-sync vs the
-        # server's RENDERED seconds (from video_clock). When sent runs > max_lag ahead of
-        # rendered, we skip feeding the server so the lips stay current (the voice is already
-        # forwarded in full at real-time).
-        self._audio_sent_s = 0.0
-        self._video_s = 0.0
 
         # Real-time-paced feed to the server (live mode). CosyVoice produces the whole reply
         # FASTER than real-time (RTF<1); if we forwarded all that audio to the renderer as fast
@@ -166,6 +151,20 @@ class MuseTalkVideoService(FrameProcessor):
         self._suppress_until = 0.0              # drop server idle frames until here so they can't
         #   preempt the crossfade playout (the burst-flush collapse P12 hit)
 
+        # --- freeze watchdog (capture the REAL freeze the ~1s hold/offset sampling misses) ---
+        # A freeze = video frames stop reaching the transport for a beat. Track the wall-gap
+        # between EMITTED OutputImageRawFrames (every release path funnels through push_frame) and
+        # warn the instant it exceeds MUSETALK_STALL_LOG_S, classified render-starved (the server
+        # also stopped feeding us -> high arrival gap) vs delivery-side (frames buffered but not
+        # going out). A TOTAL stall emits nothing, so a poller (_watch_loop) raises it rather than
+        # the next emit. Pairs with the browser-side monitor in main.py for the transport/browser
+        # leg the server can't see. Default 0 (OFF) -- diagnostic scaffolding; set a value like
+        # 0.4 to re-arm it when hunting a freeze.
+        self._stall_s = float(os.getenv("MUSETALK_STALL_LOG_S", "0") or "0")
+        self._last_emit_t: float | None = None   # loop.time() of the last video frame pushed out
+        self._stall_open = False                 # a freeze is currently being reported
+        self._watch_task: asyncio.Task | None = None
+
     # --- connection lifecycle ---------------------------------------------
     async def _connect(self):
         if self._recv_task is not None:
@@ -178,6 +177,8 @@ class MuseTalkVideoService(FrameProcessor):
         self._recv_task = asyncio.create_task(self._receive_loop())
         if self._feed_task is None:
             self._feed_task = asyncio.create_task(self._feed_loop())
+        if self._watch_task is None and self._stall_s > 0:
+            self._watch_task = asyncio.create_task(self._watch_loop())
 
     async def _open_ws(self):
         logger.info(f"Connecting to MuseTalk server at {self._ws_url} "
@@ -219,7 +220,7 @@ class MuseTalkVideoService(FrameProcessor):
     async def _disconnect(self):
         self._closing = True
         self._cancel_fallback()
-        for task_attr in ("_recv_task", "_feed_task"):
+        for task_attr in ("_recv_task", "_feed_task", "_watch_task"):
             task = getattr(self, task_attr)
             if task:
                 task.cancel()
@@ -317,7 +318,6 @@ class MuseTalkVideoService(FrameProcessor):
             self._cancel_fallback()
             self._video_active = True
         elif kind == "video_clock":
-            self._video_s = int(evt.get("frames", 0)) / self._fps   # rendered secs (live skip uses this)
             if not self._unsynced and self._mode == "steady":
                 await self._advance()   # heartbeat (real pacing is on frame receipt)
         elif kind == "video_end":
@@ -338,9 +338,8 @@ class MuseTalkVideoService(FrameProcessor):
 
     async def _advance(self):
         """Release received frames, each paired (in order) with the audio due by its time and
-        tagged sync_with_audio so the transport pins it. If the voice is buffered too far ahead
-        of the released video (render falling behind on a long reply), CATCH UP: drop the backlog
-        frames + release their audio so the voice stays ~real-time instead of drifting."""
+        tagged sync_with_audio so the transport pins it. Never release past the voice we have
+        buffered (the audio_cap below), so the video can't run ahead of the voice."""
         async with self._lock:
             # Never release video past the voice we actually have buffered: a frame at index
             # i needs the audio up to i/fps, so cap at the buffered-audio position. This stops
@@ -355,30 +354,12 @@ class MuseTalkVideoService(FrameProcessor):
             while self._released_idx < target:
                 await self._emit_pair(self._released_idx)
                 self._released_idx += 1
-            if self._mode != "prerender" and self._max_lag > 0:
-                hold = self._audio_clock_s - self._released_idx / self._fps
-                if hold > self._max_lag:
-                    target_audio = self._audio_clock_s - self._max_lag
-                    skip_to = int(target_audio * self._fps)
-                    if skip_to > self._released_idx:
-                        latest = min(skip_to, len(self._vbuf))  # newest frame we actually have
-                        if latest > 0:
-                            fr = OutputImageRawFrame(
-                                image=self._vbuf[latest - 1], size=self._size, format="RGB")
-                            fr.sync_with_audio = True
-                            await self.push_frame(fr, FrameDirection.DOWNSTREAM)
-                        self._released_idx = skip_to   # jump the cursor; the skipped span is dropped
-                    while (self._aidx < len(self._abuf)
-                           and self._abuf[self._aidx][0] <= target_audio):
-                        _e, af, ad = self._abuf[self._aidx]
-                        self._aidx += 1
-                        await self.push_frame(af, ad)
             self._log_hold()
 
     async def _emit_pair(self, i: int):
         """Audio due by frame i's time (in order), then frame i tagged sync_with_audio. Caller
         holds the lock. Frame is skipped if not buffered yet (a caught-up cursor ran ahead)."""
-        ft = i / self._fps + self._lead_s
+        ft = i / self._fps
         while self._aidx < len(self._abuf) and self._abuf[self._aidx][0] <= ft:
             _e, af, ad = self._abuf[self._aidx]
             self._aidx += 1
@@ -431,14 +412,6 @@ class MuseTalkVideoService(FrameProcessor):
         except Exception:  # noqa: BLE001 -- close polish only; never disrupt the next turn
             pass
 
-    def _log_live(self, behind: float):
-        now = asyncio.get_running_loop().time()
-        if now - self._last_hold_log >= 1.0:
-            self._last_hold_log = now
-            logger.info(f"[musetalk live] lip-behind={behind:0.2f}s "
-                        f"(sent {self._audio_sent_s:0.1f}s, rendered {self._video_s:0.1f}s)"
-                        f"{' SKIP' if self._max_lag > 0 and behind > self._max_lag else ''}")
-
     def _reset_turn(self):
         self._abuf = []
         self._aidx = 0
@@ -447,8 +420,6 @@ class MuseTalkVideoService(FrameProcessor):
         self._released_idx = 0
         self._video_active = False
         self._unsynced = False
-        self._audio_sent_s = 0.0
-        self._video_s = 0.0
         self._t_audio_first = None
         self._t_vid_first = None
         self._t_vid_last = None
@@ -532,7 +503,45 @@ class MuseTalkVideoService(FrameProcessor):
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSAudioRawFrame):
             self._align_even(frame)   # keep the downstream PCM whole-sample (anti-screech guard)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, OutputImageRawFrame):
+            self._note_emit()         # freeze watchdog: a video frame is leaving downstream
         await super().push_frame(frame, direction)
+
+    def _note_emit(self):
+        """Mark a video frame's departure; close out any freeze the watchdog opened (the gap
+        since the last emit IS the freeze duration, so log it before overwriting the timestamp)."""
+        if self._stall_s <= 0:
+            return
+        now = asyncio.get_running_loop().time()
+        if self._stall_open and self._last_emit_t is not None:
+            logger.warning(f"[avatar FREEZE] recovered after {(now - self._last_emit_t) * 1000:.0f}ms")
+            self._stall_open = False
+        self._last_emit_t = now
+
+    async def _watch_loop(self):
+        """Poll for a video-out stall the ~1s hold/offset logs can't see: if no frame has gone
+        downstream for MUSETALK_STALL_LOG_S while a turn is live (or its audio still draining),
+        log it ONCE with the state that localizes it (render-starved vs delivery-side)."""
+        while not self._closing:
+            await asyncio.sleep(0.2)
+            if self._last_emit_t is None or self._stall_open:
+                continue
+            if not (self._video_active or self._aidx < len(self._abuf)):
+                continue   # between turns, holding the rest pose is not a freeze
+            now = asyncio.get_running_loop().time()
+            gap = now - self._last_emit_t
+            if gap < self._stall_s:
+                continue
+            arr = (now - self._t_vid_last) if self._t_vid_last is not None else -1.0
+            cause = ("render-starved (server not sending frames)" if arr >= self._stall_s
+                     else "delivery-side (frames buffered, not going downstream)")
+            logger.warning(
+                f"[avatar FREEZE] no video out for {gap * 1000:.0f}ms -> {cause}; "
+                f"server-arrival-gap={arr * 1000:.0f}ms "
+                f"vbuf={len(self._vbuf) - self._released_idx} abuf={len(self._abuf) - self._aidx} "
+                f"active={self._video_active}"
+            )
+            self._stall_open = True
 
     # --- frame processing --------------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection):

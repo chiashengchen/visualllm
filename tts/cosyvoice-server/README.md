@@ -5,6 +5,12 @@ project (NCU). Replaces ElevenLabs in the `STT → LLM → TTS → MuseTalk` pip
 with a fully local **CosyVoice2-0.5B** engine, exposed as a FastAPI service on
 port **8001** (matches the pipeline's `COSYVOICE_URL`).
 
+> **Chinese-quality fixes — apply `patches/` after cloning upstream CosyVoice.** Running the LLM on
+> vLLM dropped CosyVoice's repetition-aware sampling, so Chinese intermittently looped on silence
+> (a ~4 s sentence → ~12 s of dead air). `patches/` restores it (a vLLM logits processor + `top_p`),
+> and `tts_engine.py` now defaults to a naturally fluid "pro" voice so zh ≈ English pacing. See
+> `patches/README.md` and `docs/PROBLEMS-AND-FIXES.md` P18.
+
 ```
 tts/
 ├── app.py             # FastAPI service: web page + POST /tts + /health

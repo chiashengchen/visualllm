@@ -3,7 +3,7 @@
 A real-time **speech → STT → LLM → TTS → talking-head avatar** system.
 You talk, it transcribes you, an LLM answers, the answer is spoken, and a GPU renders a
 lip-synced face — all streaming end-to-end over WebRTC to a browser. Target:
-time-to-first-output (TTFO) **< 8 s**.
+time-to-first-output (TTFO) **< 3 s**.
 
 > This document is the *how it works* companion to `STATUS.md` (current state / decisions)
 > and `CLAUDE.md` (repo conventions). When in doubt about live state, `STATUS.md` wins.
@@ -58,7 +58,7 @@ mic → transport.input() (+ Silero VAD)
 
 **It all streams.** The LLM's *first sentence* reaches TTS before the full answer is
 generated, and TTS's *first audio chunk* reaches the avatar immediately. That overlap is
-what keeps the whole thing inside the < 8 s budget.
+what keeps the whole thing inside the < 3 s budget.
 
 `TtfoMeter` (`pipeline/metrics.py`) logs `[TTFO]` per turn — the gap from
 `UserStoppedSpeakingFrame` to `BotStartedSpeakingFrame`.
@@ -122,7 +122,7 @@ transport. It:
 `local_services/musetalk_server/app.py` (FastAPI websocket). See §4.
 
 ### TtfoMeter
-`pipeline/metrics.py`. Pure measurement — logs the < 8 s metric per turn and a summary on
+`pipeline/metrics.py`. Pure measurement — logs the < 3 s metric per turn and a summary on
 disconnect.
 
 ---
@@ -285,6 +285,8 @@ in order of effectiveness:
 | `AVATAR_REF` | `assets/avatar_female.png` | portrait (image or video) the MuseTalk server animates |
 | `MUSETALK_SYNC_MODE` | `steady` | video-master, synced start (user's pick + default). The old steady "screech" is FIXED (`_align_even` whole-sample guard + `BOT_VAD_STOP_FALLBACK_SECS` raise, `docs/PROBLEMS-AND-FIXES.md` P3). Tradeoff: under a long render stall the voice briefly pauses then resumes clean. `live` = audio-master (voice never pauses, lips trail ~0.75s) is the alternative |
 | `MUSETALK_FPS` / `MUSETALK_SIZE` | `20` / `512` | avatar output fps / frame px (shrinking SIZE does NOT cut MuseTalk compute). **Keep FPS a divisor of 16000** (8/10/16/20/25) so frame count = audio length; the `samples_for_frames` fix makes the current `12` correct too (P9) |
+| `MUSETALK_TRT` | `1` (default) | **TensorRT render path** (UNet+VAE engines in `musetalk_server/trt_cache/`): per-segment render ~389ms→~255ms, so the avatar holds ~12fps under CosyVoice's shared-GPU contention where the PyTorch path drifts seconds behind the voice on long turns (`docs/PROBLEMS-AND-FIXES.md` P16). Engines are ~1.75GB, gitignored, GPU/driver-specific — build with `local_services/musetalk_server/trt_build.py` (`python -m local_services.musetalk_server.trt_build`); any load failure falls back to PyTorch. `0` = PyTorch |
+| `MUSETALK_GPU_COMPOSITE` | `1` | **GPU per-frame composite**: runs the mask-blend + downscale on the GPU (torch) instead of CPU PIL/cv2 — composite ~73ms→~11ms per 8-frame seg → total render 246→182ms (−26%, ceiling ~33→44fps) (`docs/PROBLEMS-AND-FIXES.md` P17). **Only active with `MUSETALK_TRT=1`** (VAE output is already a GPU tensor); the PyTorch path keeps the CPU composite. Output pixel-identical (SSIM 1.0, ≤1 LSB). Benchmarked: at 12fps it does NOT change A/V drift (TRT already holds ≥12fps even under 100% contention) — the win is reserve headroom + a freed CPU. Falls back to CPU if a crop_box runs off-frame. Code default off (opt-in). `0` = CPU composite |
 | `COSYVOICE_VLLM_GPU_UTIL` | `0.3` | *(set in the **cosyvoice repo**, not this `.env`)* fraction of the 16GB card vLLM may use. 0.2 was too low (< its ~4GB footprint → KV cache crash); 0.3 fits alongside MuseTalk. Raise to ~0.35 with more free VRAM |
 | `MUSETALK_LEAD_FRAMES` | `14` | video-start cushion — **load-bearing** (lower starves the queue → freeze) |
 | `MUSETALK_FEED_BURST_S` | `1.0` | burst the first 1s of a turn's audio un-paced → renderer not starved at turn start (lip-start lag ~1.9s→~0.8s; `docs/PROBLEMS-AND-FIXES.md` P2) |
@@ -293,8 +295,16 @@ in order of effectiveness:
 | `BOT_VAD_STOP_FALLBACK_SECS` | `600` | steady-screech fix: keep high so a render stall can't discard the partial audio buffer |
 | `WEBRTC_ICE_SUBNET` | `100.64.0.0/10` | pin WebRTC ICE host candidates to the Tailscale interface (fixes the intermittent remote mic); `0` = advertise all |
 | `CLIENT_JITTER_BUFFER_MS` | `400` | receive-side WebRTC jitter buffer (0 = off); raise for a remote viewer |
+| `CLIENT_FORCE_SPEAKER` | `1` | phone browsers: play the voice on the **loudspeaker**, not the earpiece (Android Chrome flips to ear-style 'communication' routing while the mic is live; iOS gets a WebAudio fallback). Mobile-UA only — desktop/headphones untouched. The phone self-reports to `[speaker-debug]` in `pipeline.log`. `0` = off (`docs/PROBLEMS-AND-FIXES.md` P24) |
 | `WEBRTC_VIDEO_BITRATE_MAX` | `600000` | VP8 send-bitrate ceiling, bits/s (0 = aiortc default 1.5M) |
-| `TTFO_TARGET_SECONDS` | `8` | the < 8 s target for logging |
+| `CLIENT_PLAYOUT_PROBE` | `0` | **measurement scaffolding (default OFF).** `1` = inject a `<head>` AnalyserNode that beacons the instant the bot's voice first plays in the browser (`[client-playout]` → `/client/playout`), so `python -m scripts.measure --from-browser` can close the latency waterfall's to-the-ear last mile with a real device instead of an estimate (`docs/PROBLEMS-AND-FIXES.md` P35) |
+| `MEASURE_BUTTON` | `0` | **measurement scaffolding (default OFF).** `1` = inject a "Measure turn" button into `/client/`. On click it resumes the AudioContext (a user gesture — why it fires where the passive `CLIENT_PLAYOUT_PROBE` may not), POSTs `/client/measure-turn` (the server injects a fixed-question turn through the full LLM→TTS→avatar path into the live task), times **click→first-voice-onset** and shows it in-page, and beacons the onset to `/client/playout` for `--from-browser`. The one-click way to measure a real device WITHOUT mic/VAD/STT turn-taking (real browser turns log no `[TTFO]`). **The in-page number (click→ear, one browser clock) is the trustworthy figure**; the server-clock `--from-browser` Δ over-counts on a REMOTE device (adds the beacon's return network hop). `main.py::_install_measure_button` |
+| `COSYVOICE_FIRST_PIECE` | `1` | **en TTFO lever**: flush the LLM's first CLAUSE to TTS early (ASCII comma/space past `COSYVOICE_FIRST_PIECE_MIN_CHARS`/`_MAX_CHARS` = 18/32) — CosyVoice's first-chunk TTFB scales with input length, so the short opener starts speech ~1.3s sooner (TTFO ~4.6→~3.2s). `0` = whole sentences (`local_services/first_piece_aggregator.py`) |
+| `COSYVOICE_FIRST_PIECE_ZH` | `1` | **zh TTFO lever (2026-07-04)**: same idea for Chinese, which the en split never touches (full-width ，vs ASCII comma, no spaces). Splits the turn's FIRST piece at a full-width ，；： ONLY — never a char cap (cuts mid-word) — min `COSYVOICE_FIRST_PIECE_ZH_MIN_CHARS` (=5) CJK chars so the opening audio covers the next piece's synthesis. Long-opener turns 4.78→3.08s, no between-clause pause (`docs/PROBLEMS-AND-FIXES.md` P23) |
+| `COSYVOICE_FIRST_HOP_ZH` | `0` | *(cosyvoice repo's `run_vllm_server.sh`, not this `.env`)* zh opening-chunk size hop. **Keep 0** — hop=5's small first chunk fills the `lead=14` cushion slowly → the steady-hold balloons (zh median 4.14→3.09s at hop=0; P22 reversed the earlier hop=5 advice) |
+| `FILLER_WORDS` | `1` | **baseline (2026-07-05)**: the turn opens on a rotated natural "thinking" phrase ("嗯，讓我想一下喔，…") through the normal TTS path, so the avatar starts talking + lip-moving ~0.7s sooner (zh def 2.91→2.23s). **PERCEPTION win, not a speedup** — TTFO counts time-to-first-SOUND (= the filler); the real answer arrives slightly later. Fillers ~1.2s so the first piece fills the `lead=14` cushion (a too-short filler balloons the hold). Needs `COSYVOICE_FIRST_PIECE=1`. `0` = off (`docs/PROBLEMS-AND-FIXES.md` P26) |
+| `FILLER_WORDS_COUNT` | `1` | how many fillers to chain at turn start; each adds ~1.2s of "thinking" before the real answer |
+| `TTFO_TARGET_SECONDS` | `3` | the < 3 s target for logging |
 
 Keys required: `DEEPGRAM_API_KEY`, `OPENROUTER_API_KEY` (and `ELEVENLABS_API_KEY` +
 `ELEVENLABS_VOICE_ID` only if `TTS_PROVIDER=elevenlabs`). With `LLM_PROVIDER=weather_chain`
@@ -320,7 +330,7 @@ TTS/avatar servers are managed separately (the status dots tell you if the provi
 | `pipeline/main.py` | Pipeline assembly, transport params, greeting, A/V-sync coupling, the screech fix + the three remote-WebRTC fixes |
 | `pipeline/config.py` | All `.env`-driven config + system prompts |
 | `pipeline/stages/*.py` | Per-stage single-provider factories (vad/stt/llm/tts/avatar) |
-| `pipeline/metrics.py` | `TtfoMeter` (the < 8 s metric) |
+| `pipeline/metrics.py` | `TtfoMeter` (the < 3 s metric) |
 | `local_services/musetalk_video.py` | Client-side avatar processor + frame-clocked A/V sync + `_align_even` |
 | `local_services/musetalk_server/app.py` | MuseTalk GPU server (ws, frame pump, sync markers, session guard) |
 | `local_services/cosyvoice_tts.py` | CosyVoice streaming TTS client (reused by `TTS_PROVIDER=moss`) |
@@ -342,6 +352,7 @@ TTS/avatar servers are managed separately (the status dots tell you if the provi
 | Lips start **~5s late** + render falls behind on long replies | `cudnn.benchmark=True` (per-turn re-autotune spike) | Keep it `False` in `musetalk_server/app.py` |
 | Voice **screeches** mid-reply in steady mode | pipecat discarding the odd partial audio buffer on a render-stall gap | Keep `BOT_VAD_STOP_FALLBACK_SECS` high + `_align_even` (both already in) |
 | Lips **drift / out of sync** in browser | `video_out_is_live=True` dropping synced frames | Use `steady` mode (couples is_live off); one `MUSETALK_FPS` everywhere |
+| Lips **fall progressively behind** the voice, worse the longer the reply | render can't hold `MUSETALK_FPS` under CosyVoice's shared-GPU contention; the deficit accumulates over the turn | Keep `MUSETALK_TRT=1` (~1.5× faster render → holds ~12fps; drift flat vs +3.9s/13.6s on PyTorch, P16). Real fix = dedicated avatar GPU. Do NOT re-lock the voice to video |
 | Video **lags / stutters** remotely, audio fine | oversized WebRTC stream on a WAN link | Fit the stream: smaller `MUSETALK_SIZE` + `WEBRTC_VIDEO_BITRATE_MAX`; tune `CLIENT_JITTER_BUFFER_MS` |
 | **Remote mic dies** mid-call ("works sometimes") | WebRTC ICE candidate pollution | `WEBRTC_ICE_SUBNET=100.64.0.0/10` pins ICE to Tailscale |
 | Avatar **laggy on the GPU box itself** | onnxruntime fell back to CPU, or fps mismatch | Verify CUDA DLLs on path; keep one `MUSETALK_FPS` everywhere |

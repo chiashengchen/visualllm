@@ -105,6 +105,8 @@ class MuseTalkEngine:
         self.fps = fps
         self._ready = False
         self.idx = 0  # base-frame cursor (cycles for video refs; static for a photo)
+        self._trt = None  # set by _init_trt() when MUSETALK_TRT=1; None => PyTorch render path
+        self._gpu_composite = False  # set by _init_gpu_composite() when MUSETALK_GPU_COMPOSITE=1
 
     # --- one-time load ----------------------------------------------------
     def load(self):
@@ -179,10 +181,48 @@ class MuseTalkEngine:
         self._build_idle_loop()
         self._ready = True
         self._warmup()   # pay the first-inference cost NOW so the first real turn isn't cold
+        # VRAM trim: warmup ran dummy segments to pay one-time cuDNN/kernel/alloc costs;
+        # that leaves reserved-but-unused blocks in PyTorch's caching allocator. Return
+        # them to the driver so the idle footprint reflects the real working set (this is
+        # where the measured ~8.7GB vs the model's ~4-6GB gap mostly hides). Best-effort:
+        # an empty_cache failure must never block the server coming up.
+        try:
+            if self.torch.cuda.is_available():
+                self.torch.cuda.synchronize()
+                self.torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 -- cache release is best-effort
+            logger.exception("empty_cache after warmup failed (non-fatal).")
+        # Optional TensorRT render path. Engines are a prebuilt artifact (built offline,
+        # ~7min); load them if present. ANY failure -> stay on the proven PyTorch path.
+        if os.getenv("MUSETALK_TRT", "0").lower() in ("1", "true", "yes"):
+            try:
+                self._init_trt()
+                logger.info("MuseTalk TRT engines loaded (MUSETALK_TRT=1).")
+            except Exception:  # noqa: BLE001 -- TRT is best-effort; fall back to torch
+                logger.exception("TRT init failed; using the PyTorch render path.")
+                self._trt = None
+        self._init_gpu_composite()
         logger.info(
             f"MuseTalk ready. {len(self.frame_cycle)} base frame(s) prepared; "
             f"{len(self._idle_loop)} idle frame(s)."
         )
+
+    def _init_trt(self):
+        """Load the prebuilt UNet + VAE-decoder TRT engines. Build them offline with the
+        trt_export.py + trt_build.py one-liners in SETUP.md ("TensorRT engines"). Raises
+        if the engines are absent (the caller then falls back to the PyTorch path)."""
+        from .trt_runtime import TRTModule
+
+        cache = SERVER_DIR / "trt_cache"
+        unet_e, vae_e = cache / "unet.engine", cache / "vae.engine"
+        if not (unet_e.exists() and vae_e.exists()):
+            raise RuntimeError(
+                f"TRT engines not found in {cache}; build them offline first."
+            )
+        self._trt = {
+            "unet": TRTModule(str(unet_e), self.device),
+            "vae": TRTModule(str(vae_e), self.device),
+        }
 
     # --- avatar preparation (mmpose-free, cached) -------------------------
     def _avatar_key(self) -> str:
@@ -466,6 +506,63 @@ class MuseTalkEngine:
         )
         return self._frame_to_bytes(combine)
 
+    def _init_gpu_composite(self):
+        """Precompute per-base-frame GPU tensors so the per-frame mask-blend + downscale
+        runs on the GPU instead of CPU PIL/cv2 (that CPU composite is ~31% of render even
+        with TRT). Only active WITH the TRT path -- there the VAE output is already a GPU
+        tensor, so nothing extra is transferred; the PyTorch path (recon is CPU numpy) keeps
+        the CPU composite. Disabled (CPU fallback) if any crop_box runs off-frame. The math
+        mirrors get_image_blending + _frame_to_bytes; verified SSIM 1.0 / <=1 LSB vs CPU."""
+        self._gpu_composite = False
+        if os.getenv("MUSETALK_GPU_COMPOSITE", "0").lower() not in ("1", "true", "yes"):
+            return
+        if self._trt is None:
+            logger.info("MUSETALK_GPU_COMPOSITE=1 ignored: needs the TRT render path (MUSETALK_TRT=1).")
+            return
+        torch = self.torch
+        for frame, cb in zip(self.frame_cycle, self.mask_coords_cycle):
+            H, W = frame.shape[:2]
+            x_s, y_s, x_e, y_e = cb
+            if x_s < 0 or y_s < 0 or x_e > W or y_e > H:
+                logger.warning(
+                    "GPU composite disabled: crop_box %s off frame %dx%d; using CPU path.", cb, W, H
+                )
+                return
+        # base frames as RGB[0,1] (cv2 gives BGR); masks as [0,1] alpha -- all on GPU, once.
+        self._base_rgb_cycle = [
+            torch.from_numpy(np.ascontiguousarray(f[:, :, ::-1])).to(self.device).float() / 255.0
+            for f in self.frame_cycle
+        ]
+        self._mask01_cycle = [
+            torch.from_numpy(m).to(self.device).float() / 255.0 for m in self.mask_cycle
+        ]
+        self._gpu_composite = True
+        logger.info("MuseTalk GPU composite enabled (MUSETALK_GPU_COMPOSITE=1).")
+
+    def _composite_gpu(self, mouth_rgb01, idx: int) -> bytes:
+        """GPU twin of _composite. `mouth_rgb01` is the VAE output for one frame: a
+        (3,256,256) RGB[0,1] GPU tensor. Alpha-blend it into the base frame within the
+        crop_box, downscale to (size,size), return RGB bytes -- mirroring get_image_blending
+        + _frame_to_bytes exactly (verified SSIM 1.0)."""
+        torch = self.torch
+        F = torch.nn.functional
+        x1, y1, x2, y2 = self.coord_cycle[idx]
+        x_s, y_s, x_e, y_e = self.mask_coords_cycle[idx]
+        base = self._base_rgb_cycle[idx]
+        alpha = self._mask01_cycle[idx][..., None]
+        mouth = F.interpolate(
+            mouth_rgb01[None], size=(y2 - y1, x2 - x1), mode="bilinear", align_corners=False
+        )[0].permute(1, 2, 0)
+        region = base[y_s:y_e, x_s:x_e, :]
+        face_large = region.clone()
+        face_large[y1 - y_s:y2 - y_s, x1 - x_s:x2 - x_s, :] = mouth
+        blended = face_large * alpha + region * (1.0 - alpha)
+        out = base.clone()
+        out[y_s:y_e, x_s:x_e, :] = blended
+        o = F.interpolate(out.permute(2, 0, 1)[None], size=(self.size, self.size), mode="area")[0]
+        u8 = (o.permute(1, 2, 0) * 255.0).round().clamp(0, 255).to(torch.uint8)
+        return u8.contiguous().cpu().numpy().tobytes()
+
     def render_segment(self, audio: np.ndarray) -> list[bytes]:
         """One audio segment (float32 [-1,1] @16k) -> list of RGB frame buffers.
 
@@ -503,15 +600,39 @@ class MuseTalkEngine:
                     device=self.device, dtype=self.unet.model.dtype
                 )
                 audio_feat = self.pe(w_batch)
-                pred = self.unet.model(
-                    latent_batch, self.timesteps, encoder_hidden_states=audio_feat
-                ).sample
-                pred = pred.to(dtype=self.vae.vae.dtype)
-                recon = self.vae.decode_latents(pred)  # [n,256,256,3] BGR uint8
+                if self._trt is not None:
+                    # TRT path: engines replace the UNet + VAE-decoder GPU calls. The pre/post
+                    # math MUST match VAE.decode_latents exactly so _composite is unchanged:
+                    #   decode_latents = (1/sf)*latents -> vae.decode -> /2+0.5 clamp ->
+                    #                    permute(0,2,3,1) -> *255 uint8 -> [...,::-1] (BGR)
+                    sample = self._trt["unet"](
+                        latent=latent_batch, timestep=self.timesteps, audio=audio_feat
+                    )["sample"]
+                    dec_in = (1.0 / self.vae.scaling_factor) * sample.to(self.vae.vae.dtype)
+                    img = self._trt["vae"](latent=dec_in)["image"]   # (n,3,256,256) raw decode
+                    img = (img / 2 + 0.5).clamp(0, 1)   # (n,3,256,256) RGB[0,1] on GPU
+                    if self._gpu_composite:
+                        recon_gpu = img          # composite it on the GPU (no CPU transfer here)
+                        recon = None
+                    else:
+                        recon = (
+                            img.permute(0, 2, 3, 1).float().cpu().numpy() * 255
+                        ).round().astype("uint8")[..., ::-1]
+                        recon_gpu = None
+                else:
+                    pred = self.unet.model(
+                        latent_batch, self.timesteps, encoder_hidden_states=audio_feat
+                    ).sample
+                    pred = pred.to(dtype=self.vae.vae.dtype)
+                    recon = self.vae.decode_latents(pred)  # [n,256,256,3] BGR uint8
+                    recon_gpu = None
                 tg = _t.time()
                 gpu_s += tg - (t_whisper if i == 0 else tc)
                 for k in range(n):
-                    out.append(self._composite(recon[k], idxs[k]))
+                    if recon_gpu is not None:
+                        out.append(self._composite_gpu(recon_gpu[k], idxs[k]))
+                    else:
+                        out.append(self._composite(recon[k], idxs[k]))
                 tc = _t.time()
                 comp_s += tc - tg
                 self.idx = (self.idx + n) % L
@@ -544,8 +665,12 @@ async def stream(ws: WebSocket):
     fps = engine.fps
     seg_samples = engine.samples_for_frames(SEG_FRAMES, fps)   # ceil-sized: exactly SEG_FRAMES/seg
     audio_buf = np.zeros(0, dtype=np.float32)
-    # Bounded queue of rendered frames; the pump drains it at a STEADY fps.
-    out_q: asyncio.Queue = asyncio.Queue(maxsize=600)
+    # Bounded queue of rendered frames; the pump drains it at a STEADY fps. A SMALLER
+    # cap is the documented SAFE lag lever for live mode: under GPU contention the render
+    # skips stale frames instead of letting the lips fall arbitrarily far behind the voice.
+    # Do NOT re-lock the voice to video (that froze it). 600 ~= 30s @20fps (effectively
+    # unbounded); tighten via MUSETALK_OUT_Q for a shorter max trail.
+    out_q: asyncio.Queue = asyncio.Queue(maxsize=int(os.getenv("MUSETALK_OUT_Q", "600")))
     closed = asyncio.Event()
     _active_closed = closed
     loop = asyncio.get_event_loop()

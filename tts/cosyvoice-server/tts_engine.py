@@ -38,16 +38,19 @@ DEFAULT_MODEL_DIR = str(COSY_DIR / "pretrained_models" / "CosyVoice2-0.5B")
 # Overridable via env so the registered voice can be swapped without editing source:
 #   COSYVOICE_PROMPT_WAV  = path to the reference clip (clean, mono)
 #   COSYVOICE_PROMPT_TEXT = the EXACT transcript of that clip (zero-shot needs it)
-# Defaults reproduce the original "weather" female zero-shot speaker.
+# BASELINE (2026-07-02): the "pro" female AI-assistant voice (asset/pro_ref.wav). zero_shot
+# clones the reference's RHYTHM, and this clip is naturally fluid, so zh comes out smooth
+# (~1.3 pauses/sentence vs the old "weather" clip's ~3.8) -- fewer than English -- with no
+# pause-trimming needed. The old "希望你以后..." weather speaker is asset/zero_shot_prompt.wav.
 PROMPT_WAV = os.environ.get(
-    "COSYVOICE_PROMPT_WAV", str(COSY_DIR / "asset" / "zero_shot_prompt.wav")
+    "COSYVOICE_PROMPT_WAV", str(COSY_DIR / "asset" / "pro_ref.wav")
 )
 PROMPT_TEXT = os.environ.get(
-    "COSYVOICE_PROMPT_TEXT", "希望你以后能够做的比我还好呦。"
+    "COSYVOICE_PROMPT_TEXT", "你好，我是你的AI虚拟助手，很高兴见到你。今天天气不错，有什么我可以帮你的"
 )
 SPK_ID = os.environ.get("COSYVOICE_SPK_ID", "weather")
 
-_CJK = re.compile(r"[㐀-鿿豈-﫿぀-ヿ]")
+_CJK = re.compile(r"[㐀-鿿豈-﫿぀-ヿ]")
 
 
 def is_cjk(text: str) -> bool:
@@ -115,18 +118,60 @@ class TTSEngine:
             raise RuntimeError("CosyVoice produced no audio")
         return torch.concat(chunks, dim=1), self.sample_rate
 
+    def _squeeze_silence(self, chunks):
+        """Streaming pause-compressor: cap over-long internal silences. OFF by default now.
+
+        NOTE (baseline 2026-07-02): this is a leftover band-aid from when the zh reference
+        was the gappy "weather" clip (~57% voiced / ~3.8 pauses/sentence). The "pro" baseline
+        voice is naturally fluid (~1.3 pauses, fewer than English), so trimming is unnecessary
+        and OFF by default. Re-enable for a gappy voice with COSYVOICE_SILENCE_CAP_S=<seconds>
+        (e.g. 0.15): it caps any silent run to that length, keeping short pauses but removing
+        the excess -- only ever drops near-silent frames, never speech. Stateful across the
+        streamed chunks so a gap spanning a chunk boundary is still capped.
+        """
+        import torch
+        import numpy as np
+        sr = self.sample_rate
+        frame = int(sr * 0.02)                                   # 20 ms granularity
+        cap_frames = max(1, round(float(os.getenv("COSYVOICE_SILENCE_CAP_S", "0")) / 0.02))
+        thr = float(os.getenv("COSYVOICE_SILENCE_THR", "0.015"))  # abs RMS silence floor
+        carry = np.zeros(0, dtype=np.float32)
+        sil = 0
+        for wav, sr_ in chunks:
+            a = np.concatenate([carry, wav.reshape(-1).detach().cpu().numpy().astype(np.float32)])
+            nf = len(a) // frame
+            carry = a[nf * frame:]
+            keep = []
+            for i in range(nf):
+                f = a[i * frame:(i + 1) * frame]
+                if float(np.sqrt(np.mean(f * f))) < thr:
+                    sil += 1
+                    if sil <= cap_frames:
+                        keep.append(f)                            # keep up to the cap, drop the rest
+                else:
+                    sil = 0
+                    keep.append(f)
+            if keep:
+                yield torch.from_numpy(np.concatenate(keep)).unsqueeze(0), sr_
+        if carry.size:
+            yield torch.from_numpy(carry).unsqueeze(0), self.sample_rate
+
     def synthesize_stream(self, text: str, speed: float = 1.0):
         """Yield (waveform_tensor[1, N], sample_rate) chunks as they synthesize.
 
         Same voice/language routing as synthesize(), but stream=True so the first
         chunk is emitted before the whole utterance is done -- the path the realtime
         pipeline (Pipecat -> avatar) needs to start lip-syncing within the TTFO budget.
+
+        The zh pause-trimmer (_squeeze_silence) is OFF by default in this baseline (the pro
+        voice doesn't need it); enable it for a gappier voice with COSYVOICE_SILENCE_CAP_S>0.
         """
         text = (text or "").strip()
         if not text:
             raise ValueError("text is empty")
 
-        if is_cjk(text):
+        cjk = is_cjk(text)
+        if cjk:
             if self._spk_ready:
                 gen = self.model.inference_zero_shot(
                     text, "", "", zero_shot_spk_id=SPK_ID, stream=True, speed=speed
@@ -141,8 +186,9 @@ class TTSEngine:
                 text, PROMPT_WAV, zero_shot_spk_id=spk, stream=True, speed=speed
             )
 
-        for out in gen:
-            yield out["tts_speech"], self.sample_rate
+        raw = ((out["tts_speech"], self.sample_rate) for out in gen)
+        squeeze = cjk and float(os.getenv("COSYVOICE_SILENCE_CAP_S", "0")) > 0
+        yield from (self._squeeze_silence(raw) if squeeze else raw)
 
 
 # Module-level singleton so importing scripts share one loaded model.

@@ -16,6 +16,12 @@ pipecat-ai-prebuilt
 python-dotenv>=1.0.1
 loguru>=0.7.2
 
+# --- Local OFFLINE streaming STT (STT_PROVIDER=sherpa) ----------------------
+# In-process, CPU, ~0 VRAM. sherpa-onnx runs a streaming zipformer; opencc maps
+# zh output to Traditional (zh-TW). Download the model under models/ (see INSTALL.md).
+sherpa-onnx>=1.10
+opencc-python-reimplemented
+
 # --- Direct deps used by local service modules (transitive via pipecat but pinned here) ---
 aiohttp           # cosyvoice_tts.py HTTP streaming client
 numpy             # musetalk_video.py audio/frame processing

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -31,11 +32,16 @@ import aiohttp
 import numpy as np
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer, MediaRecorder, MediaRelay
+from dotenv import load_dotenv
 
 # Reuse the probe's wav builder + lip-offset analyser (single source of truth).
 from scripts._webrtc_probe import build_mic_wav, lip_offset_from_mp4, wait_ice
 
 ROOT = Path(__file__).resolve().parent.parent
+# Read the SAME .env the pipeline uses, so the playout-estimate jitter buffer matches the live
+# CLIENT_JITTER_BUFFER_MS (150 here) instead of os.getenv's hardcoded 400 default -- otherwise the
+# "Browser jitter + decode + playout" waterfall row is overstated by the config delta (~250ms).
+load_dotenv(ROOT / ".env")
 LOG = ROOT / "logs" / "pipeline.log"
 OFFER_URL = "http://127.0.0.1:7860/api/offer"
 MP4 = str(ROOT / "output" / "measure_live.mp4")
@@ -48,11 +54,20 @@ RING, DOT = "◯", "●"  # 'receives'  /  'emits'
 _TS = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+) \| ")
 
 
+def _audio_rms(frame):
+    """RMS of one decoded aiortc AudioFrame (int16 PCM) -> float."""
+    s = frame.to_ndarray()
+    if s.size == 0:
+        return 0.0
+    s = s.astype(np.float64)
+    return float(np.sqrt(np.mean(s * s)))
+
+
 # ----------------------------------------------------------------- WebRTC probe
 async def run_probe(mic_wav: str, lead: float, tail: float, duration: float):
     """Connect like a browser, play the mic wav, record + time the bot's A/V."""
     vwall: list[float] = []
-    awall: list[float] = []
+    awall: list[tuple[float, float]] = []  # (arrival_epoch, rms) per received audio frame
     mic = build_mic_wav(mic_wav, lead, tail)
 
     pc = RTCPeerConnection()
@@ -75,22 +90,30 @@ async def run_probe(mic_wav: str, lead: float, tail: float, duration: float):
             break
         await asyncio.sleep(0.1)
 
-    async def pump(track, sink):
+    async def vpump(track):
         while True:
             try:
                 await track.recv()
             except Exception:
                 return
-            sink.append(time.time())
+            vwall.append(time.time())
+
+    async def apump(track):
+        while True:
+            try:
+                frame = await track.recv()
+            except Exception:
+                return
+            awall.append((time.time(), _audio_rms(frame)))
 
     relay = MediaRelay()
     recorder = MediaRecorder(MP4)
     if "video" in tracks:
         recorder.addTrack(relay.subscribe(tracks["video"]))
-        asyncio.ensure_future(pump(relay.subscribe(tracks["video"]), vwall))
+        asyncio.ensure_future(vpump(relay.subscribe(tracks["video"])))
     if "audio" in tracks:
         recorder.addTrack(relay.subscribe(tracks["audio"]))
-        asyncio.ensure_future(pump(relay.subscribe(tracks["audio"]), awall))
+        asyncio.ensure_future(apump(relay.subscribe(tracks["audio"])))
     await recorder.start()
     print(f"  connected (pc_id={ans.get('pc_id')}, tracks={list(tracks)}); capturing {duration}s...")
     await asyncio.sleep(duration)
@@ -113,7 +136,7 @@ def probe_metrics(vwall, awall, connect_t, fps):
             freeze_ms=round(gaps.max() * 1000),
         )
     if len(awall) > 2:
-        ag = np.diff(np.array(awall))
+        ag = np.diff(np.array([t for t, _ in awall]))
         m["audio_gap_p95_ms"] = round(float(np.percentile(ag, 95)) * 1000, 1)
         m["audio_gap_max_ms"] = round(ag.max() * 1000, 1)
     off, corr, err = lip_offset_from_mp4(MP4, fps)
@@ -145,13 +168,61 @@ def parse_turn():
     if not ttfo_idx:
         raise SystemExit("No [TTFO ...] line in pipeline.log — did a turn complete?")
     bi = ttfo_idx[-1]
-    bot_started_t, ttfo_s, ttfo_pass = lines[bi][0], None, None
+    ttfo_s = ttfo_pass = None
     mt = re.search(r"\[TTFO (OK |OVER)\] ([\d.]+)s", lines[bi][1])
     if mt:
         ttfo_pass = mt.group(1).strip() == "OK"
         ttfo_s = float(mt.group(2))
+    return _build_turn(lines, bi, lines[bi][0], ttfo_s, ttfo_pass)
 
-    # t0 = the 'User stopped speaking' / 'Generating chat' just before the TTFO.
+
+def parse_browser_turn(target_s=3.0, fresh_s=300.0):
+    """Anchor the most recent REAL BROWSER turn for --from-browser.
+
+    Browser turns don't emit a [TTFO line: pipecat's transcription turn-stop path (logged
+    'strategy: None') broadcasts no user-stop frame the TtfoMeter arms on, and a noisy real mic
+    yields no Silero VAD stop either — so parse_turn()'s [TTFO anchor would lock onto a STALE
+    headless turn. Instead we anchor on the real [client-playout] beacon: bot_started is the
+    'Bot started speaking' whose audio the beacon reports (the server emit precedes the browser
+    onset), and we compute the turn's TTFO ourselves. Returns a turn dict, or None if there is no
+    beacon / no matching bot-start (e.g. the browser page is stale and never armed the probe)."""
+    lines = _parse_lines()
+    # Anchor on the beacon's SERVER-CLOCK arrival time (its log timestamp), NOT the browser's
+    # Date.now() in the body: the client can be a DIFFERENT device whose clock is skewed from the
+    # server's (breaks the same-box assumption), but the server logs bot-start AND the beacon POST
+    # on one clock. server_arrival - bot_started = last mile + the onset->POST round-trip (~tens of
+    # ms on a LAN) — a small, honest overestimate that is robust to any client clock offset.
+    beacon = None
+    for dt, txt in reversed(lines):
+        if "[client-playout]" in txt and "audio-onset" in txt:
+            beacon = dt.timestamp()  # server-clock instant the onset beacon reached us
+            break
+    if beacon is None:
+        return None
+    # Freshness guard: reject a beacon logged minutes ago (a stale prior turn / a crafted test) so it
+    # can't fake a number — fall back with the "hard-reload + do one turn" guidance instead.
+    if time.time() - beacon > fresh_s:
+        return None
+    # The 'Bot started speaking' whose audio this beacon reports: the server emit precedes the
+    # beacon arrival by the last mile, so take the closest bot-start within a 6s window before it.
+    bi = None
+    for i in range(len(lines) - 1, -1, -1):
+        dt, txt = lines[i]
+        if "Bot started speaking" in txt and 0 <= beacon - dt.timestamp() <= 6.0:
+            bi = i
+            break
+    if bi is None:
+        return None
+    turn = _build_turn(lines, bi, lines[bi][0], None, None, target_s=target_s)
+    turn["playout_epoch"] = beacon  # server-clock beacon arrival -> the last-mile source
+    return turn
+
+
+def _build_turn(lines, bi, bot_started_t, ttfo_s, ttfo_pass, target_s=3.0):
+    """Shared anchor extraction. bi indexes the turn's 'bot start' line (a [TTFO line for the
+    headless path, a 'Bot started speaking' line for the browser path). ttfo_s=None means the
+    meter never logged it (browser turn) → we derive it as bot_started - t0."""
+    # t0 = the 'User stopped speaking' / 'Generating chat' just before the bot start.
     t0 = None
     question = None
     for dt, txt in lines[:bi][::-1]:
@@ -168,6 +239,10 @@ def parse_turn():
 
     def off(dt):
         return round((dt - t0).total_seconds(), 3)
+
+    if ttfo_s is None:  # browser turn: derive the TTFO the meter never logged
+        ttfo_s = round((bot_started_t - t0).total_seconds(), 2)
+        ttfo_pass = ttfo_s <= target_s
 
     turn = {"t0": t0, "ttfo_s": ttfo_s, "ttfo_pass": ttfo_pass,
             "bot_started": off(bot_started_t), "question": question}
@@ -195,6 +270,79 @@ def parse_turn():
     return turn
 
 
+def answer_onset_epoch(samples, t0_epoch, guard=0.15, thresh_frac=0.18, run=3):
+    """First SUSTAINED energetic audio frame after t0 = the answer reaching the client.
+
+    samples: list of (arrival_epoch, rms). Frames at/after t0_epoch+guard are considered, so the
+    greeting (well before t0) and inter-turn silence are skipped; the threshold is a fraction of
+    the post-t0 peak, and `run` consecutive frames must clear it so a lone spike doesn't trigger.
+    Returns the onset epoch (same clock as the log's t0), or None.
+    """
+    win = [(t, r) for (t, r) in samples if t >= t0_epoch + guard]
+    if len(win) < run:
+        return None
+    peak = max(r for _, r in win)
+    if peak <= 0:
+        return None
+    thr = thresh_frac * peak
+    for i in range(len(win) - run + 1):
+        if all(win[i + k][1] >= thr for k in range(run)):
+            return win[i][0]
+    return None
+
+
+# Ordered stages of the turn; each row's cost ends at the named anchor. Kept module-level so the
+# HTML/JS and the tests share one definition of "the stages".
+_WATERFALL_STAGES = [
+    ("STT finalize -> LLM", "llm_recv", "assumed"),  # llm_recv is pinned to t0 (pre-warmed), not measured
+    ("LLM first token", "llm_ttfb", "log"),
+    ("LLM -> TTS (sentence-1 flush)", "tts_recv", "log"),
+    ("TTS synth first chunk", "tts_ttfb", "log"),
+    ("TTS -> bot-start (steady lead-hold)", "bot_started", "log"),
+    ("Transport + encode + network", "client_arrival", "probe"),
+    ("Browser jitter + decode + playout", "playout", "browser"),
+]
+
+
+def build_waterfall(anchors, playout_source="est"):
+    """Per-stage latency from t0 to the user's ear. anchors: dict of t0-relative offsets (s);
+    a None anchor yields an 'unknown' row that does NOT corrupt the running sum (the next known
+    stage's delta absorbs the gap, so ok-row deltas always telescope to the last known cum).
+    A NEGATIVE anchor (logged before t0) is also 'unknown': a stage can't complete before the
+    turn starts, so it is a prior-turn artifact (e.g. VAD split a synthetic mic into two turns),
+    never a real -X.XXs latency. Returns ordered rows: {stage, delta, cum, source, status}; the
+    final 'total' row carries the end-to-end cum. The last stage's source is `playout_source`.
+    """
+    rows, prev = [], 0.0
+    for label, key, source in _WATERFALL_STAGES:
+        if key == "playout":
+            source = playout_source
+        end = anchors.get(key)
+        if end is None or end < 0:
+            rows.append(dict(stage=label, delta=None, cum=None, source=source, status="unknown"))
+            continue
+        rows.append(dict(stage=label, delta=round(end - prev, 3), cum=round(end, 3),
+                         source=source, status="ok"))
+        prev = end
+    total = next((r["cum"] for r in reversed(rows) if r["cum"] is not None), None)
+    rows.append(dict(stage="END-TO-END, user hears", delta=None, cum=total,
+                     source="", status="total"))
+    return rows
+
+
+def parse_playout_beacon(lines, t0_dt):
+    """First real-browser [client-playout] audio-onset after t0. lines: list of (datetime, text)
+    (as _parse_lines returns). The beacon body is JSON {"ev":"audio-onset","t":<epoch_ms>}.
+    Returns the offset from t0 in seconds (same-box clock), or None."""
+    t0e = t0_dt.timestamp()
+    for dt, txt in lines:
+        if "[client-playout]" in txt and "audio-onset" in txt and dt >= t0_dt:
+            m = re.search(r'"t":\s*(\d+(?:\.\d+)?)', txt)
+            if m:
+                return round(float(m.group(1)) / 1000.0 - t0e, 3)
+    return None
+
+
 # --------------------------------------------------------- assemble timeline JS
 def build_events(turn):
     """Turn the parsed anchors into the events[] the HTML renders."""
@@ -213,7 +361,7 @@ def build_events(turn):
                    why="STT's input is the live mic the whole time the user talks; partials refine into one final transcript.",
                    src="log STT stream"))
     ev.append(dict(stage="capture", t=0, kind="turn", label="User STOPPED speaking - t0",
-                   why="VAD + turn-analyzer agree the turn ended. This instant starts the <8s TTFO stopwatch.",
+                   why="VAD + turn-analyzer agree the turn ended. This instant starts the <3s TTFO stopwatch.",
                    src="log user-turn-stopped"))
     ev.append(dict(stage="stt", t=0, kind="emit", label="STT emits final transcript",
                    why=(f"\"{turn['question']}\" " if turn["question"] else "") + "pushed into the LLM context aggregator.",
@@ -264,7 +412,7 @@ def build_events(turn):
                    src="~ TTS first chunk"))
     ev.append(dict(stage="deliver", t=bs, kind="turn", big=True, label=f"Bot started speaking -> TTFO {turn['ttfo_s']}s",
                    why="The VOICE starts reaching the client here - audio is forwarded immediately WITHOUT waiting for a rendered frame. "
-                       f"TTFO measures this audio start: {turn['ttfo_s']}s vs the 8s target. Lip-synced video is rendered best-effort (decoupled).",
+                       f"TTFO measures this audio start: {turn['ttfo_s']}s vs the 3s target. Lip-synced video is rendered best-effort (decoupled).",
                    src="log [TTFO] (audio-path event)"))
     ev.append(dict(stage="avatar", t=bs, end=bstop, kind="span", label="MuseTalk lip-sync render",
                    why="Mouth-region frames, live/audio-master sync: the voice is forwarded immediately so it can never freeze; lips track best-effort on the shared GPU.",
@@ -296,7 +444,7 @@ def build_metrics(turn, pm, offline_lip):
     def tag(cond_ok, cond_warn=False):
         return "ok" if cond_ok else ("warn" if cond_warn else "bad")
     M = []
-    M.append(dict(k="TTFO", v=str(turn["ttfo_s"]), u="s", n="target 8s",
+    M.append(dict(k="TTFO", v=str(turn["ttfo_s"]), u="s", n="target 3s",
                   tag="ok" if turn["ttfo_pass"] else "bad"))
     if "startup_s" in pm:
         M.append(dict(k="Startup (connect -> 1st frame)", v=str(pm["startup_s"]), u="s", n="incl. idle warmup", tag=""))
@@ -414,26 +562,96 @@ def print_summary(report):
     print("metrics:")
     for m in report["metrics"]:
         print(f"  {m['k']:<28} {m['v']} {m['u']}  ({m['n']})")
+    print("latency waterfall (t0 = user stopped -> user hears):")
+    for r in report.get("waterfall", []):
+        d = f"{r['delta']:+.2f}s" if r["delta"] is not None else "   ?  "
+        c = f"{r['cum']:.2f}s" if r["cum"] is not None else "  ?  "
+        src = f"[{r['source']}]" if r["source"] else ""
+        print(f"  {r['stage']:<36} {d:>8}   cum {c:>7}  {src}")
     print(f"wrote {JSON_OUT}")
     print(f"wrote {JS_OUT}  -> open docs/workflow-timeline.html (auto-uses it)")
     print("=======================================================\n")
 
 
 async def main(args):
-    print("[1/3] driving a real turn through the live pipeline (WebRTC)...")
-    vwall, awall, connect_t = await run_probe(args.mic, args.lead, args.tail, args.duration)
-    pm = probe_metrics(vwall, awall, connect_t, args.fps)
+    lines_cache = None
+    if args.from_browser:
+        print("[1/3] --from-browser: parsing the last real-browser turn (no headless probe)...")
+        vwall, awall, pm = [], [], {}
+    else:
+        print("[1/3] driving a real turn through the live pipeline (WebRTC)...")
+        vwall, awall, connect_t = await run_probe(args.mic, args.lead, args.tail, args.duration)
+        pm = probe_metrics(vwall, awall, connect_t, args.fps)
 
     print("[2/3] parsing the pipeline.log delta for this turn...")
-    turn = parse_turn()
+    turn = None
+    if args.from_browser:
+        # Browser turns log no [TTFO, so anchor on the real [client-playout] beacon instead of
+        # letting parse_turn() lock onto a stale headless [TTFO turn.
+        turn = parse_browser_turn()
+        if turn is None:
+            print("  [warn] no [client-playout] beacon found — falling back to the last [TTFO turn. "
+                  "Hard-reload /client/ (so the probe injects), do ONE turn, then re-run.")
+    if turn is None:
+        turn = parse_turn()
+    t0_epoch = turn["t0"].timestamp()
+
+    # Last mile source 1 (headless): first ANSWER audio arriving at the client, on the log clock.
+    # Guard: parse_turn() returns the LAST [TTFO] in the log, which can be an OLD turn if the probe
+    # never drove a fresh one. Correlating this run's live audio arrivals against a stale t0 yields a
+    # plausible-but-wrong number, so only trust the arrival when t0 falls inside this capture window.
+    client_arrival = None
+    if awall:
+        onset = answer_onset_epoch(awall, t0_epoch)
+        turn_age = time.time() - t0_epoch
+        fresh_window = args.duration + args.tail + 15.0
+        if onset is None:
+            pass
+        elif turn_age > fresh_window:
+            print(f"  [warn] latest log turn is {turn_age:.0f}s old (> {fresh_window:.0f}s window) "
+                  "-- no fresh turn captured; client_arrival left blank.")
+        else:
+            client_arrival = round(onset - t0_epoch, 3)
+
+    # Last mile source 2 (real browser): the [client-playout] onset beacon, if present.
+    playout = None
+    if args.from_browser:
+        if turn.get("playout_epoch") is not None:
+            # Use the exact beacon parse_browser_turn anchored on (avoids re-matching a stale/bogus
+            # beacon logged after t0). Its browser onset epoch is on the same-box clock as t0.
+            playout = round(turn["playout_epoch"] - t0_epoch, 3)
+        else:
+            lines_cache = _parse_lines()
+            playout = parse_playout_beacon(lines_cache, turn["t0"])
+
+    anchors = dict(
+        llm_recv=0.0,
+        llm_ttfb=turn["llm_ttfb"][0] if turn["llm_ttfb"] else None,
+        tts_recv=turn["sentences"][0][0] if turn["sentences"] else None,
+        tts_ttfb=turn["tts_ttfb"][0][0] if turn["tts_ttfb"] else None,
+        bot_started=turn["bot_started"],
+        client_arrival=client_arrival,
+        playout=playout,
+    )
+    # Fill the playout row: measured browser beacon, else estimate = arrival + jitter buffer.
+    if anchors["playout"] is not None:
+        # When there's no headless client_arrival (browser-only mode), the transport row is
+        # 'unknown' so this beacon Delta absorbs server->browser transport+network too -- say so.
+        playout_source = "browser" if client_arrival is not None else "browser+net"
+    elif client_arrival is not None:
+        jb = float(os.getenv("CLIENT_JITTER_BUFFER_MS", "400") or 400) / 1000.0
+        anchors["playout"] = round(client_arrival + jb, 3)
+        playout_source = "est"
+    else:
+        playout_source = "est"
 
     offline_lip = None
-    if args.offline_capture:
+    if args.offline_capture and not args.from_browser:
         ow = args.offline_wav if Path(args.offline_wav).exists() else args.mic
         print(f"[3/3] offline avatar capture for a clean lip offset (wav={ow})...")
         offline_lip = await offline_capture(ow, args.fps)
     else:
-        print("[3/3] offline capture skipped (pass --offline-capture to enable).")
+        print("[3/3] offline capture skipped.")
 
     report = {
         "meta": {
@@ -441,12 +659,13 @@ async def main(args):
             "question": turn["question"],
             "machine": args.machine,
             "stack": args.stack,
-            "ttfo": turn["ttfo_s"], "ttfo_target": 8.0, "ttfo_pass": turn["ttfo_pass"],
+            "ttfo": turn["ttfo_s"], "ttfo_target": 3.0, "ttfo_pass": turn["ttfo_pass"],
         },
         "events": build_events(turn),
         "handoffs": build_handoffs(turn),
         "metrics": build_metrics(turn, pm, offline_lip),
-        "raw": {"probe": pm, "ttfo_s": turn["ttfo_s"],
+        "waterfall": build_waterfall(anchors, playout_source),
+        "raw": {"probe": pm, "ttfo_s": turn["ttfo_s"], "anchors": anchors,
                 "sentences": turn["sentences"], "tts_ttfb": turn["tts_ttfb"]},
     }
     write_outputs(report)
@@ -466,6 +685,10 @@ if __name__ == "__main__":
     ap.add_argument("--fps", type=int, default=12)
     ap.add_argument("--offline-capture", action="store_true",
                     help="also drive the MuseTalk server directly for a guaranteed lip offset")
+    ap.add_argument("--from-browser", action="store_true",
+                    help="parse-only: use a real browser's [client-playout] beacon for the last "
+                         "mile instead of driving the headless probe (open /client, do one turn, "
+                         "with CLIENT_PLAYOUT_PROBE=1)")
     ap.add_argument("--offline-wav", default="output/reply_concise.wav",
                     help="wav for the offline avatar capture; a longer bot-reply clip gives a more reliable lip offset")
     ap.add_argument("--machine", default="this box (RTX 5060 Ti, Blackwell)")

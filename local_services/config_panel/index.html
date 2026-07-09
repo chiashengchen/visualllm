@@ -53,6 +53,20 @@
   <div class="status" id="status"></div>
 
   <div id="curated"></div>
+
+  <div class="card" id="graphsCard" style="display:none">
+    <h2>CosyVoice CUDA graphs</h2>
+    <div class="row">
+      <div class="lab"><b>CUDA graphs</b><span class="h">Faster + steadier TTS first-chunk
+        (2026-07-05 finding). Lives in <code>run_vllm_server.sh</code>, not <code>.env</code> &mdash;
+        applying RESTARTS the WSL CosyVoice server (~1&nbsp;min, TTS briefly stops), not the pipeline.</span></div>
+      <div>
+        <select id="graphsSel"><option value="on">on (graphs / EAGER=0)</option><option value="off">off (eager)</option></select>
+        <button class="restart" id="graphsApply" style="margin-top:8px; width:100%">Apply + restart CosyVoice</button>
+      </div>
+    </div>
+  </div>
+
   <details id="advWrap"><summary>Advanced settings</summary><div id="advanced"></div></details>
 </div>
 
@@ -64,7 +78,13 @@
 
 <script>
 const $=s=>document.querySelector(s);
-let FIELDS=[], VALUES={}, dirty={};
+let FIELDS=[], VALUES={}, dirty={}, GRAPHS=null;
+
+function renderGraphs(){
+  if(GRAPHS===null){ $("#graphsCard").style.display="none"; return; }
+  $("#graphsCard").style.display="";
+  $("#graphsSel").value = GRAPHS ? "on" : "off";
+}
 
 function fieldRow(f){
   const v = VALUES[f.key] ?? "";
@@ -102,8 +122,8 @@ function render(){
 
 async function load(){
   const c = await (await fetch("/config")).json();
-  FIELDS=c.fields; VALUES=c.values; dirty={};
-  render();
+  FIELDS=c.fields; VALUES=c.values; dirty={}; GRAPHS=c.graphs;
+  render(); renderGraphs();
   $("#saveBtn").disabled=true; $("#msg").textContent="";
 }
 
@@ -131,6 +151,23 @@ $("#restartBtn").addEventListener("click", async ()=>{
     $("#msg").textContent = r.message || (r.ok?"restarted":"restart failed");
   }catch(e){ $("#msg").textContent="restart request error"; }
   $("#restartBtn").disabled=false; $("#restartBtn").textContent="Restart pipeline";
+  refreshStatus();
+});
+
+$("#graphsApply").addEventListener("click", async ()=>{
+  const on = $("#graphsSel").value==="on";
+  if(on===GRAPHS){ $("#msg").textContent="CUDA graphs already "+(on?"on":"off"); return; }
+  if(!confirm((on?"ENABLE":"DISABLE")+" CUDA graphs? This restarts the WSL CosyVoice server (~1 min) and briefly stops TTS.")) return;
+  $("#graphsApply").disabled=true; $("#graphsApply").textContent="restarting CosyVoice (~1 min)...";
+  $("#msg").textContent="rewriting run_vllm_server.sh + relaunching WSL TTS...";
+  try{
+    const r = await (await fetch("/graphs",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({on})})).json();
+    if(r.graphs!==undefined && r.graphs!==null) GRAPHS=r.graphs;
+    renderGraphs();
+    $("#msg").textContent = r.message || (r.ok?"applied":"failed");
+  }catch(e){ $("#msg").textContent="graphs request error"; }
+  $("#graphsApply").disabled=false; $("#graphsApply").textContent="Apply + restart CosyVoice";
   refreshStatus();
 });
 

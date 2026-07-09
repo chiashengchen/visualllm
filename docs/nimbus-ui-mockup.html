@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Nimbus AI — UI Mockup</title>
+<!--
+  Nimbus AI Weather Presenter — Phase-1 static mockup (figma-to-code).
+  Pixel-faithful, responsive, self-contained reproduction of the Figma "Group 2".
+  Avatar stage is a PLACEHOLDER; Phase 2 wires it to the live pipecat WebRTC avatar
+  video + mic + bot audio + RTVI transcript. Colors/spacing/icons taken from the export.
+-->
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Hanken+Grotesk:wght@600;700;800&family=Geist:wght@500;600;700&display=swap');
+
+  :root {
+    --bg-0:        #070b16;
+    --bg-appbar:   #0D1322;
+    --glass:       rgba(15, 23, 42, 0.60);
+    --glass-2:     rgba(30, 41, 59, 0.70);
+    --input-bg:    rgba(30, 41, 59, 0.50);
+    --border-soft: rgba(255, 255, 255, 0.10);
+    --border-hair: rgba(255, 255, 255, 0.08);
+    --border-nav:  rgba(67, 70, 85, 0.30);
+    --blue:        #2563EB;
+    --blue-400:    #3B82F6;
+    --blue-300:    #60A5FA;
+    --user-bubble: rgba(37, 99, 235, 0.80);
+    --user-border: rgba(59, 130, 246, 0.30);
+    --pill-bg:     #242A3A;
+    --text-hi:     #F8FAFC;
+    --text-nav:    #DDE2F8;
+    --text-nav-2:  #C3C6D7;
+    --text-mut:    #94A3B8;
+    --text-mut-2:  #64748B;
+    --avatar-ring: #1E293B;
+    font-synthesis: none;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: 'Inter', -apple-system, Roboto, Helvetica, sans-serif;
+    color: var(--text-hi);
+    background:
+      radial-gradient(1200px 620px at 50% -8%, #16233f 0%, rgba(11,17,32,0) 62%),
+      radial-gradient(900px 500px at 82% 8%, #1b2b4d 0%, rgba(11,17,32,0) 55%),
+      linear-gradient(180deg, #0b1120 0%, #070b16 100%);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ------------------------------------------------------------------ APPBAR */
+  .appbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: var(--bg-appbar);
+    border-bottom: 1px solid var(--border-nav);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    padding: 0 clamp(20px, 3.5vw, 48px);
+  }
+  .appbar-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+    height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 28px;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; min-width: 0; }
+  .brand-badge {
+    display: flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; flex-shrink: 0;
+    border-radius: 9999px;
+    background: var(--blue);
+    box-shadow: 0 6px 18px -4px rgba(37, 99, 235, 0.55);
+  }
+  .brand-text { display: flex; flex-direction: column; min-width: 0; }
+  .brand-title {
+    font-family: 'Hanken Grotesk', 'Inter', sans-serif;
+    font-weight: 700; font-size: 24px; line-height: 30px;
+    color: var(--text-nav); white-space: nowrap;
+  }
+  .brand-sub {
+    font-family: 'Geist', 'Inter', sans-serif;
+    font-weight: 600; font-size: 12px; line-height: 16px;
+    letter-spacing: 0.6px; color: var(--text-nav-2);
+    text-transform: uppercase; white-space: nowrap;
+  }
+
+  .nav-actions { display: flex; align-items: center; gap: 18px; }
+  .lang-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 16px;
+    border-radius: 9999px;
+    border: 1px solid var(--border-nav);
+    background: var(--pill-bg);
+    color: var(--text-nav);
+    font-size: 15px;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+  .lang-pill:hover { background: #2b3245; border-color: rgba(96,165,250,.35); }
+  .nav-divider {
+    width: 1px; height: 26px; flex-shrink: 0;
+    background: var(--border-nav);
+  }
+  .icon-group { display: flex; align-items: center; gap: 6px; }
+  .icon-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 42px; height: 42px;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    background: transparent;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.05); border-color: var(--border-hair); }
+  .icon-btn svg { display: block; }
+
+  /* --------------------------------------------------- STAGE (70/30 split) */
+  .stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    overflow: hidden;
+  }
+  /* weather-sky background layer (placeholder for the presenter backdrop) */
+  .stage-bg {
+    position: absolute; inset: 0;
+    opacity: 0.8;
+    pointer-events: none;
+    background:
+      radial-gradient(80% 60% at 50% 6%, rgba(96,165,250,0.22) 0%, rgba(96,165,250,0) 60%),
+      radial-gradient(60% 44% at 22% 24%, rgba(37,99,235,0.28) 0%, rgba(37,99,235,0) 65%),
+      radial-gradient(55% 50% at 82% 30%, rgba(56,89,168,0.30) 0%, rgba(56,89,168,0) 62%),
+      linear-gradient(180deg, #0f1b34 0%, #0b1428 46%, #070b16 100%);
+  }
+  .stage-bg::after {
+    /* soft drifting cloud bands */
+    content: "";
+    position: absolute; inset: -10% -20%;
+    background:
+      radial-gradient(40% 30% at 20% 30%, rgba(148,163,184,0.10), transparent 70%),
+      radial-gradient(46% 34% at 72% 22%, rgba(203,213,225,0.08), transparent 72%),
+      radial-gradient(38% 30% at 48% 60%, rgba(96,165,250,0.10), transparent 70%);
+    animation: drift 26s ease-in-out infinite alternate;
+  }
+  @keyframes drift {
+    from { transform: translate3d(-2%, 0, 0) scale(1.02); }
+    to   { transform: translate3d(3%, -1.5%, 0) scale(1.08); }
+  }
+
+  /* presenter -- left column, 70% width, full height */
+  .presenter {
+    position: relative;
+    z-index: 1;
+    flex: 0 0 70%;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .presenter-frame {
+    position: absolute; inset: 0;
+    background: #0b1120;
+    overflow: hidden;
+  }
+  .presenter-img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    object-position: center center;
+    display: block;
+  }
+  .presenter-frame::after {
+    /* subtle vignette so the name tag + right seam read cleanly */
+    content: "";
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(7,11,22,0) 72%, rgba(7,11,22,0.55) 100%),
+      linear-gradient(90deg, rgba(7,11,22,0) 88%, rgba(7,11,22,0.45) 100%);
+  }
+
+  /* name tag pill -- floats over the bottom of the presenter panel */
+  .name-tag {
+    position: absolute; z-index: 4;
+    left: 50%; bottom: 24px; transform: translateX(-50%);
+    display: inline-flex; align-items: center; gap: 12px;
+    padding: 8px 16px;
+    border-radius: 9999px;
+    border: 1px solid var(--border-hair);
+    background: var(--glass);
+    box-shadow: 0 4px 30px 0 rgba(0,0,0,0.50);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+  .eq { display: flex; align-items: flex-end; gap: 4px; height: 16px; }
+  .eq span {
+    width: 4px; border-radius: 9999px; background: var(--blue-400);
+    animation: eq 1.05s ease-in-out infinite;
+  }
+  .eq span:nth-child(1) { height: 12px; background: var(--blue-400); animation-delay: 0s; }
+  .eq span:nth-child(2) { height: 16px; background: var(--blue-300); animation-delay: .18s; }
+  .eq span:nth-child(3) { height: 8px;  background: var(--blue-400); animation-delay: .36s; }
+  @keyframes eq { 0%,100% { transform: scaleY(.55); } 50% { transform: scaleY(1); } }
+  .name-tag-label { font-size: 14px; font-weight: 500; letter-spacing: 0.35px; color: var(--text-hi); white-space: nowrap; }
+
+  /* --------------------------------------------- CHAT CONSOLE (right, 30%) */
+  .console {
+    position: relative;
+    z-index: 3;
+    flex: 0 0 30%;
+    min-width: 320px;
+    height: 100%;
+    padding: 22px 22px 14px;
+    border-left: 1px solid var(--border-soft);
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .messages {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    padding-bottom: 6px;
+  }
+  .messages::-webkit-scrollbar { width: 8px; }
+  .messages::-webkit-scrollbar-thumb { background: rgba(148,163,184,.25); border-radius: 8px; }
+
+  .msg { display: flex; gap: 12px; max-width: 92%; }
+  .msg.ai { align-self: flex-start; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; max-width: 88%; }
+
+  .avatar-dot {
+    width: 40px; height: 40px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 9999px;
+    border: 1px solid var(--border-soft);
+    background: var(--avatar-ring);
+    margin-top: 4px;
+  }
+  .bubble-wrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .bubble {
+    padding: 14px 16px;
+    font-size: 14px; line-height: 22.75px;
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  }
+  .msg.ai .bubble {
+    border-radius: 0 16px 16px 16px;
+    border: 1px solid rgba(255,255,255,0.05);
+    background: var(--glass-2);
+    color: var(--text-hi);
+  }
+  .msg.user .bubble {
+    border-radius: 16px 0 16px 16px;
+    border: 1px solid var(--user-border);
+    background: var(--user-bubble);
+    box-shadow: 0 4px 15px 0 rgba(37,99,235,0.30);
+    color: #fff;
+  }
+  .meta {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 10px; line-height: 15px; color: var(--text-mut-2);
+  }
+  .msg.ai .meta { padding-left: 4px; }
+  .msg.user .meta { padding-right: 4px; justify-content: flex-end; }
+
+  /* input area */
+  .input-area {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .round-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 48px; height: 48px; flex-shrink: 0;
+    border-radius: 9999px;
+    border: 1px solid var(--border-hair);
+    background: var(--glass);
+    box-shadow: 0 4px 30px 0 rgba(0,0,0,0.50);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+    color: #CBD5E1;
+    cursor: pointer;
+    transition: border-color .15s ease, color .15s ease;
+  }
+  .round-btn:hover { border-color: rgba(96,165,250,.4); color: #e2e8f0; }
+
+  .input-shell {
+    position: relative;
+    flex: 1 1 auto;
+    display: flex; align-items: center;
+    padding: 13px 96px 14px 20px;
+    border-radius: 9999px;
+    border: 1px solid var(--border-soft);
+    background: var(--input-bg);
+    min-width: 0;
+  }
+  .input-shell input {
+    flex: 1 1 auto; min-width: 0;
+    border: none; outline: none; background: transparent;
+    font-family: inherit; font-size: 14px; color: var(--text-hi);
+  }
+  .input-shell input::placeholder { color: var(--text-mut); }
+
+  .voice-wave {
+    position: absolute; right: 56px; top: 50%; transform: translateY(-50%);
+    display: flex; align-items: center; gap: 2px; height: 24px; opacity: 0.6;
+  }
+  .voice-wave span {
+    width: 4px; border-radius: 9999px; background: var(--blue-300);
+    animation: wave 1.1s ease-in-out infinite;
+  }
+  .voice-wave span:nth-child(1){ height:12px; animation-delay:0s; }
+  .voice-wave span:nth-child(2){ height:20px; animation-delay:.12s; }
+  .voice-wave span:nth-child(3){ height:8px;  animation-delay:.24s; }
+  .voice-wave span:nth-child(4){ height:24px; animation-delay:.36s; }
+  .voice-wave span:nth-child(5){ height:16px; animation-delay:.48s; }
+  @keyframes wave { 0%,100% { transform: scaleY(.5);} 50% { transform: scaleY(1);} }
+
+  .send-btn {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    display: flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px;
+    border-radius: 9999px; border: none;
+    background: var(--blue);
+    box-shadow: 0 10px 15px -3px rgba(59,130,246,0.30), 0 4px 6px -4px rgba(59,130,246,0.30);
+    cursor: pointer;
+    transition: transform .12s ease, filter .12s ease;
+  }
+  .send-btn:hover { filter: brightness(1.08); }
+  .send-btn:active { transform: translateY(-50%) scale(0.94); }
+
+  /* --------------------------------------------------------------- RESPONSIVE */
+  /* Tablet / narrow desktop: give the chat a touch more room */
+  @media (max-width: 1100px) and (min-width: 861px) {
+    .presenter { flex-basis: 62%; }
+    .console { flex-basis: 38%; }
+  }
+
+  /* Phones / small tablets: stack vertically, presenter becomes a top banner */
+  @media (max-width: 860px) {
+    body { height: auto; min-height: 100dvh; overflow-y: auto; overflow-x: hidden; }
+    .stage { flex-direction: column; align-items: stretch; overflow: visible; }
+    .presenter {
+      flex: 0 0 auto;
+      width: 100%;
+      aspect-ratio: 1537 / 620;   /* top-anchored banner crop */
+    }
+    .presenter-img { object-position: center top; }
+    .name-tag { bottom: 16px; }
+    .console {
+      flex: 0 0 auto;
+      width: 100%;
+      min-width: 0;
+      height: auto;
+      border-left: none;
+      border-top: 1px solid var(--border-soft);
+      padding: 18px 16px 14px;
+    }
+    .messages { flex: 0 0 auto; max-height: none; overflow: visible; }
+    .msg, .msg.user { max-width: 88%; }
+  }
+  @media (max-width: 720px) {
+    .appbar { padding: 0 14px; }
+    .appbar-inner { height: 62px; gap: 12px; }
+    .brand-sub { display: none; }
+    .brand-title { font-size: 20px; line-height: 24px; }
+    .lang-pill .lang-label { display: none; }
+    .lang-pill { padding: 8px 11px; }
+    .nav-actions { gap: 10px; }
+    .nav-divider { display: none; }
+    .icon-group { gap: 2px; }
+    .icon-btn { width: 38px; height: 38px; }
+    .input-shell { padding: 12px 92px 12px 16px; }
+  }
+  @media (max-width: 420px) {
+    .msg .avatar-dot { display: none; }
+    .voice-wave { display: none; }
+    .input-shell { padding: 12px 48px 12px 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .eq span, .voice-wave span, .stage-bg::after, .presenter-frame::before { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <!-- ===================================================== TOP NAVIGATION -->
+  <header class="appbar">
+   <div class="appbar-inner">
+    <div class="brand">
+      <div class="brand-badge" aria-hidden="true">
+        <svg width="22" height="16" viewBox="0 0 22 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5.5 16C3.98333 16 2.6875 15.475 1.6125 14.425C0.5375 13.375 0 12.0917 0 10.575C0 9.275 0.391667 8.11667 1.175 7.1C1.95833 6.08333 2.98333 5.43333 4.25 5.15C4.66667 3.61667 5.5 2.375 6.75 1.425C8 0.475 9.41667 0 11 0C12.95 0 14.6042 0.679167 15.9625 2.0375C17.3208 3.39583 18 5.05 18 7C19.15 7.13333 20.1042 7.62917 20.8625 8.4875C21.6208 9.34583 22 10.35 22 11.5C22 12.75 21.5625 13.8125 20.6875 14.6875C19.8125 15.5625 18.75 16 17.5 16H5.5ZM5.5 14H17.5C18.2 14 18.7917 13.7583 19.275 13.275C19.7583 12.7917 20 12.2 20 11.5C20 10.8 19.7583 10.2083 19.275 9.725C18.7917 9.24167 18.2 9 17.5 9H16V7C16 5.61667 15.5125 4.4375 14.5375 3.4625C13.5625 2.4875 12.3833 2 11 2C9.61667 2 8.4375 2.4875 7.4625 3.4625C6.4875 4.4375 6 5.61667 6 7H5.5C4.53333 7 3.70833 7.34167 3.025 8.025C2.34167 8.70833 2 9.53333 2 10.5C2 11.4667 2.34167 12.2917 3.025 12.975C3.70833 13.6583 4.53333 14 5.5 14Z" fill="#EEEFFF"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-title">Nimbus AI</span>
+        <span class="brand-sub">AI Meteorological System</span>
+      </div>
+    </div>
+
+    <nav class="nav-actions">
+      <button class="lang-pill" type="button">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5.84062 11.6667C5.03854 11.6667 4.28264 11.5135 3.57292 11.2073C2.86319 10.901 2.2434 10.483 1.71354 9.95312C1.18368 9.42326 0.765625 8.80347 0.459375 8.09375C0.153125 7.38403 0 6.62813 0 5.82604C0 5.02396 0.153125 4.27049 0.459375 3.56562C0.765625 2.86076 1.18368 2.2434 1.71354 1.71354C2.2434 1.18368 2.86319 0.765625 3.57292 0.459375C4.28264 0.153125 5.03854 0 5.84062 0C6.64271 0 7.39618 0.153125 8.10104 0.459375C8.8059 0.765625 9.42326 1.18368 9.95312 1.71354C10.483 2.2434 10.901 2.86076 11.2073 3.56562C11.5135 4.27049 11.6667 5.02396 11.6667 5.82604C11.6667 6.62813 11.5135 7.38403 11.2073 8.09375C10.901 8.80347 10.483 9.42326 9.95312 9.95312C9.42326 10.483 8.8059 10.901 8.10104 11.2073C7.39618 11.5135 6.64271 11.6667 5.84062 11.6667ZM5.83333 10.4708C6.08611 10.1208 6.30486 9.75625 6.48958 9.37708C6.67431 8.99792 6.825 8.59444 6.94167 8.16667H4.725C4.84167 8.59444 4.99236 8.99792 5.17708 9.37708C5.36181 9.75625 5.58056 10.1208 5.83333 10.4708ZM4.31667 10.2375C4.14167 9.91667 3.98854 9.58368 3.85729 9.23854C3.72604 8.8934 3.61667 8.53611 3.52917 8.16667H1.80833C2.09028 8.65278 2.44271 9.07569 2.86562 9.43542C3.28854 9.79514 3.77222 10.0625 4.31667 10.2375ZM7.35 10.2375C7.89444 10.0625 8.37813 9.79514 8.80104 9.43542C9.22396 9.07569 9.57639 8.65278 9.85833 8.16667H8.1375C8.05 8.53611 7.94062 8.8934 7.80937 9.23854C7.67812 9.58368 7.525 9.91667 7.35 10.2375ZM1.3125 7H3.29583C3.26667 6.80556 3.24479 6.61354 3.23021 6.42396C3.21563 6.23438 3.20833 6.0375 3.20833 5.83333C3.20833 5.62917 3.21563 5.43229 3.23021 5.24271C3.24479 5.05312 3.26667 4.86111 3.29583 4.66667H1.3125C1.26389 4.86111 1.22743 5.05312 1.20312 5.24271C1.17882 5.43229 1.16667 5.62917 1.16667 5.83333C1.16667 6.0375 1.17882 6.23438 1.20312 6.42396C1.22743 6.61354 1.26389 6.80556 1.3125 7ZM4.4625 7H7.20417C7.23333 6.80556 7.25521 6.61354 7.26979 6.42396C7.28437 6.23438 7.29167 6.0375 7.29167 5.83333C7.29167 5.62917 7.28437 5.43229 7.26979 5.24271C7.25521 5.05312 7.23333 4.86111 7.20417 4.66667H4.4625C4.43333 4.86111 4.41146 5.05312 4.39687 5.24271C4.38229 5.43229 4.375 5.62917 4.375 5.83333C4.375 6.0375 4.38229 6.23438 4.39687 6.42396C4.41146 6.61354 4.43333 6.80556 4.4625 7ZM8.37083 7H10.3542C10.4028 6.80556 10.4392 6.61354 10.4635 6.42396C10.4878 6.23438 10.5 6.0375 10.5 5.83333C10.5 5.62917 10.4878 5.43229 10.4635 5.24271C10.4392 5.05312 10.4028 4.86111 10.3542 4.66667H8.37083C8.4 4.86111 8.42188 5.05312 8.43646 5.24271C8.45104 5.43229 8.45833 5.62917 8.45833 5.83333C8.45833 6.0375 8.45104 6.23438 8.43646 6.42396C8.42188 6.61354 8.4 6.80556 8.37083 7ZM8.1375 3.5H9.85833C9.57639 3.01389 9.22396 2.59097 8.80104 2.23125C8.37813 1.87153 7.89444 1.60417 7.35 1.42917C7.525 1.75 7.67812 2.08299 7.80937 2.42812C7.94062 2.77326 8.05 3.13056 8.1375 3.5ZM4.725 3.5H6.94167C6.825 3.07222 6.67431 2.66875 6.48958 2.28958C6.30486 1.91042 6.08611 1.54583 5.83333 1.19583C5.58056 1.54583 5.36181 1.91042 5.17708 2.28958C4.99236 2.66875 4.84167 3.07222 4.725 3.5ZM1.80833 3.5H3.52917C3.61667 3.13056 3.72604 2.77326 3.85729 2.42812C3.98854 2.08299 4.14167 1.75 4.31667 1.42917C3.77222 1.60417 3.28854 1.87153 2.86562 2.23125C2.44271 2.59097 2.09028 3.01389 1.80833 3.5Z" fill="#C3C6D7"/>
+        </svg>
+        <span class="lang-label">English</span>
+        <svg width="7" height="5" viewBox="0 0 7 5" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3.5 4.31667L0 0.816667L0.816667 0L3.5 2.68333L6.18333 0L7 0.816667L3.5 4.31667Z" fill="#C3C6D7"/>
+        </svg>
+      </button>
+
+      <span class="nav-divider" aria-hidden="true"></span>
+
+      <div class="icon-group">
+      <button class="icon-btn" type="button" aria-label="Settings">
+        <svg width="21" height="20" viewBox="0 0 21 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7.3 20L6.9 16.8C6.68333 16.7167 6.47917 16.6167 6.2875 16.5C6.09583 16.3833 5.90833 16.2583 5.725 16.125L2.75 17.375L0 12.625L2.575 10.675C2.55833 10.5583 2.55 10.4458 2.55 10.3375C2.55 10.2292 2.55 10.1167 2.55 10C2.55 9.88333 2.55 9.77083 2.55 9.6625C2.55 9.55417 2.55833 9.44167 2.575 9.325L0 7.375L2.75 2.625L5.725 3.875C5.90833 3.74167 6.1 3.61667 6.3 3.5C6.5 3.38333 6.7 3.28333 6.9 3.2L7.3 0H12.8L13.2 3.2C13.4167 3.28333 13.6208 3.38333 13.8125 3.5C14.0042 3.61667 14.1917 3.74167 14.375 3.875L17.35 2.625L20.1 7.375L17.525 9.325C17.5417 9.44167 17.55 9.55417 17.55 9.6625C17.55 9.77083 17.55 9.88333 17.55 10C17.55 10.1167 17.55 10.2292 17.55 10.3375C17.55 10.4458 17.5333 10.5583 17.5 10.675L20.075 12.625L17.325 17.375L14.375 16.125C14.1917 16.2583 14 16.3833 13.8 16.5C13.6 16.6167 13.4 16.7167 13.2 16.8L12.8 20H7.3ZM9.05 18H11.025L11.375 15.35C11.8917 15.2167 12.3708 15.0208 12.8125 14.7625C13.2542 14.5042 13.6583 14.1917 14.025 13.825L16.5 14.85L17.475 13.15L15.325 11.525C15.4083 11.2917 15.4667 11.0458 15.5 10.7875C15.5333 10.5292 15.55 10.2667 15.55 10C15.55 9.73333 15.5333 9.47083 15.5 9.2125C15.4667 8.95417 15.4083 8.70833 15.325 8.475L17.475 6.85L16.5 5.15L14.025 6.2C13.6583 5.81667 13.2542 5.49583 12.8125 5.2375C12.3708 4.97917 11.8917 4.78333 11.375 4.65L11.05 2H9.075L8.725 4.65C8.20833 4.78333 7.72917 4.97917 7.2875 5.2375C6.84583 5.49583 6.44167 5.80833 6.075 6.175L3.6 5.15L2.625 6.85L4.775 8.45C4.69167 8.7 4.63333 8.95 4.6 9.2C4.56667 9.45 4.55 9.71667 4.55 10C4.55 10.2667 4.56667 10.525 4.6 10.775C4.63333 11.025 4.69167 11.275 4.775 11.525L2.625 13.15L3.6 14.85L6.075 13.8C6.44167 14.1833 6.84583 14.5042 7.2875 14.7625C7.72917 15.0208 8.20833 15.2167 8.725 15.35L9.05 18ZM10.1 13.5C11.0667 13.5 11.8917 13.1583 12.575 12.475C13.2583 11.7917 13.6 10.9667 13.6 10C13.6 9.03333 13.2583 8.20833 12.575 7.525C11.8917 6.84167 11.0667 6.5 10.1 6.5C9.11667 6.5 8.2875 6.84167 7.6125 7.525C6.9375 8.20833 6.6 9.03333 6.6 10C6.6 10.9667 6.9375 11.7917 7.6125 12.475C8.2875 13.1583 9.11667 13.5 10.1 13.5Z" fill="#C3C6D7"/>
+        </svg>
+      </button>
+
+      <button class="icon-btn" type="button" aria-label="Theme">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M11 14C11.8333 14 12.5417 13.7083 13.125 13.125C13.7083 12.5417 14 11.8333 14 11C14 10.1667 13.7083 9.45833 13.125 8.875C12.5417 8.29167 11.8333 8 11 8C10.1667 8 9.45833 8.29167 8.875 8.875C8.29167 9.45833 8 10.1667 8 11C8 11.8333 8.29167 12.5417 8.875 13.125C9.45833 13.7083 10.1667 14 11 14ZM11 16C9.61667 16 8.4375 15.5125 7.4625 14.5375C6.4875 13.5625 6 12.3833 6 11C6 9.61667 6.4875 8.4375 7.4625 7.4625C8.4375 6.4875 9.61667 6 11 6C12.3833 6 13.5625 6.4875 14.5375 7.4625C15.5125 8.4375 16 9.61667 16 11C16 12.3833 15.5125 13.5625 14.5375 14.5375C13.5625 15.5125 12.3833 16 11 16ZM4 12H0V10H4V12ZM22 12H18V10H22V12ZM10 4V0H12V4H10ZM10 22V18H12V22H10ZM5.4 6.75L2.875 4.325L4.3 2.85L6.7 5.35L5.4 6.75ZM17.7 19.15L15.275 16.625L16.6 15.25L19.125 17.675L17.7 19.15ZM15.25 5.4L17.675 2.875L19.15 4.3L16.65 6.7L15.25 5.4ZM2.85 17.7L5.375 15.275L6.75 16.6L4.325 19.125L2.85 17.7Z" fill="#C3C6D7"/>
+        </svg>
+      </button>
+
+      <button class="icon-btn" type="button" aria-label="Notifications">
+        <svg width="16" height="20" viewBox="0 0 16 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M0 17V15H2V8C2 6.61667 2.41667 5.3875 3.25 4.3125C4.08333 3.2375 5.16667 2.53333 6.5 2.2V1.5C6.5 1.08333 6.64583 0.729167 6.9375 0.4375C7.22917 0.145833 7.58333 0 8 0C8.41667 0 8.77083 0.145833 9.0625 0.4375C9.35417 0.729167 9.5 1.08333 9.5 1.5V2.2C10.8333 2.53333 11.9167 3.2375 12.75 4.3125C13.5833 5.3875 14 6.61667 14 8V15H16V17H0ZM8 20C7.45 20 6.97917 19.8042 6.5875 19.4125C6.19583 19.0208 6 18.55 6 18H10C10 18.55 9.80417 19.0208 9.4125 19.4125C9.02083 19.8042 8.55 20 8 20ZM4 15H12V8C12 6.9 11.6083 5.95833 10.825 5.175C10.0417 4.39167 9.1 4 8 4C6.9 4 5.95833 4.39167 5.175 5.175C4.39167 5.95833 4 6.9 4 8V15Z" fill="#C3C6D7"/>
+        </svg>
+      </button>
+      </div>
+    </nav>
+   </div>
+  </header>
+
+  <!-- =========================================================== STAGE -->
+  <main class="stage">
+    <div class="stage-bg" aria-hidden="true"></div>
+
+    <div class="presenter">
+      <div class="presenter-frame">
+        <img class="presenter-img" src="assets/presenter.png" alt="Nimbus AI weather presenter in the studio" />
+      </div>
+
+      <div class="name-tag">
+        <div class="eq" aria-hidden="true"><span></span><span></span><span></span></div>
+        <span class="name-tag-label">Nimbus · AI Weather Presenter</span>
+      </div>
+    </div>
+
+    <!-- chat console -->
+    <section class="console">
+      <div class="messages">
+        <div class="msg ai">
+          <div class="avatar-dot" aria-hidden="true">
+            <svg width="18" height="13" viewBox="0 0 18 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0 8.3125C0.0364583 9.42448 0.419271 10.3542 1.14844 11.1016C1.89583 11.8307 2.82552 12.2135 3.9375 12.25H14C14.9844 12.2318 15.8138 11.8945 16.4883 11.2383C17.1445 10.5638 17.4818 9.73438 17.5 8.75C17.4818 7.89323 17.2174 7.15495 16.707 6.53516C16.1784 5.89714 15.513 5.49609 14.7109 5.33203C14.8203 5.02214 14.875 4.70312 14.875 4.375C14.8568 3.6276 14.6016 3.00781 14.1094 2.51562C13.6172 2.02344 12.9974 1.76823 12.25 1.75C11.7031 1.75 11.2201 1.89583 10.8008 2.1875C10.3997 1.53125 9.87109 1.0026 9.21484 0.601562C8.55859 0.21875 7.82031 0.0182292 7 0C5.76042 0.0364583 4.73047 0.464844 3.91016 1.28516C3.08984 2.10547 2.66146 3.13542 2.625 4.375C2.625 4.44792 2.625 4.52083 2.625 4.59375C1.84115 4.88542 1.21224 5.35938 0.738281 6.01562C0.264323 6.67188 0.0182292 7.4375 0 8.3125Z" fill="#60A5FA"/>
+            </svg>
+          </div>
+          <div class="bubble-wrap">
+            <div class="bubble">Hello! I'm Nimbus, your AI weather presenter. How can I help you today?</div>
+            <div class="meta">09:41 AM</div>
+          </div>
+        </div>
+
+        <div class="msg user">
+          <div class="bubble-wrap">
+            <div class="bubble">What is the weather in Taipei today?</div>
+            <div class="meta">
+              09:41 AM
+              <svg width="9" height="9" viewBox="0 0 9 9" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.69922 1.07422C6.81641 0.94401 6.875 0.794271 6.875 0.625C6.875 0.455729 6.81641 0.30599 6.69922 0.175781C6.56901 0.0585938 6.41927 0 6.25 0C6.08073 0 5.93099 0.0585938 5.80078 0.175781L3.125 2.87109L2.01172 1.73828C1.88151 1.62109 1.73177 1.5625 1.5625 1.5625C1.39323 1.5625 1.24349 1.62109 1.11328 1.73828C0.996094 1.86849 0.9375 2.01823 0.9375 2.1875C0.9375 2.35677 0.996094 2.50651 1.11328 2.63672L2.67578 4.19922C2.80599 4.31641 2.95573 4.375 3.125 4.375C3.29427 4.375 3.44401 4.31641 3.57422 4.19922L6.69922 1.07422ZM8.57422 3.57422C8.69141 3.44401 8.75 3.29427 8.75 3.125C8.75 2.95573 8.69141 2.80599 8.57422 2.67578C8.44401 2.55859 8.29427 2.5 8.125 2.5C7.95573 2.5 7.80599 2.55859 7.67578 2.67578L3.125 7.24609L1.07422 5.17578C0.94401 5.05859 0.794271 5 0.625 5C0.455729 5 0.30599 5.05859 0.175781 5.17578C0.0585938 5.30599 0 5.45573 0 5.625C0 5.79427 0.0585938 5.94401 0.175781 6.07422L2.67578 8.57422C2.80599 8.69141 2.95573 8.75 3.125 8.75C3.29427 8.75 3.44401 8.69141 3.57422 8.57422L8.57422 3.57422Z" fill="#3B82F6"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="msg ai">
+          <div class="avatar-dot" aria-hidden="true">
+            <svg width="18" height="13" viewBox="0 0 18 13" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0 8.3125C0.0364583 9.42448 0.419271 10.3542 1.14844 11.1016C1.89583 11.8307 2.82552 12.2135 3.9375 12.25H14C14.9844 12.2318 15.8138 11.8945 16.4883 11.2383C17.1445 10.5638 17.4818 9.73438 17.5 8.75C17.4818 7.89323 17.2174 7.15495 16.707 6.53516C16.1784 5.89714 15.513 5.49609 14.7109 5.33203C14.8203 5.02214 14.875 4.70312 14.875 4.375C14.8568 3.6276 14.6016 3.00781 14.1094 2.51562C13.6172 2.02344 12.9974 1.76823 12.25 1.75C11.7031 1.75 11.2201 1.89583 10.8008 2.1875C10.3997 1.53125 9.87109 1.0026 9.21484 0.601562C8.55859 0.21875 7.82031 0.0182292 7 0C5.76042 0.0364583 4.73047 0.464844 3.91016 1.28516C3.08984 2.10547 2.66146 3.13542 2.625 4.375C2.625 4.44792 2.625 4.52083 2.625 4.59375C1.84115 4.88542 1.21224 5.35938 0.738281 6.01562C0.264323 6.67188 0.0182292 7.4375 0 8.3125Z" fill="#60A5FA"/>
+            </svg>
+          </div>
+          <div class="bubble-wrap">
+            <div class="bubble">Today's temperature in Taipei is 29&deg;C with partly cloudy skies. Humidity is 72% and wind speed is 12 km/h.</div>
+            <div class="meta">09:42 AM</div>
+          </div>
+        </div>
+
+        <div class="msg user">
+          <div class="bubble-wrap">
+            <div class="bubble">Will it rain tomorrow?</div>
+            <div class="meta">
+              09:42 AM
+              <svg width="9" height="9" viewBox="0 0 9 9" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6.69922 1.07422C6.81641 0.94401 6.875 0.794271 6.875 0.625C6.875 0.455729 6.81641 0.30599 6.69922 0.175781C6.56901 0.0585938 6.41927 0 6.25 0C6.08073 0 5.93099 0.0585938 5.80078 0.175781L3.125 2.87109L2.01172 1.73828C1.88151 1.62109 1.73177 1.5625 1.5625 1.5625C1.39323 1.5625 1.24349 1.62109 1.11328 1.73828C0.996094 1.86849 0.9375 2.01823 0.9375 2.1875C0.9375 2.35677 0.996094 2.50651 1.11328 2.63672L2.67578 4.19922C2.80599 4.31641 2.95573 4.375 3.125 4.375C3.29427 4.375 3.44401 4.31641 3.57422 4.19922L6.69922 1.07422ZM8.57422 3.57422C8.69141 3.44401 8.75 3.29427 8.75 3.125C8.75 2.95573 8.69141 2.80599 8.57422 2.67578C8.44401 2.55859 8.29427 2.5 8.125 2.5C7.95573 2.5 7.80599 2.55859 7.67578 2.67578L3.125 7.24609L1.07422 5.17578C0.94401 5.05859 0.794271 5 0.625 5C0.455729 5 0.30599 5.05859 0.175781 5.17578C0.0585938 5.30599 0 5.45573 0 5.625C0 5.79427 0.0585938 5.94401 0.175781 6.07422L2.67578 8.57422C2.80599 8.69141 2.95573 8.75 3.125 8.75C3.29427 8.75 3.44401 8.69141 3.57422 8.57422L8.57422 3.57422Z" fill="#3B82F6"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- input area -->
+      <div class="input-area">
+        <button class="round-btn" type="button" aria-label="Voice input">
+          <svg width="11" height="16" viewBox="0 0 11 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5.5 0C4.64583 0.0208333 3.9375 0.3125 3.375 0.875C2.8125 1.4375 2.52083 2.14583 2.5 3V8C2.52083 8.85417 2.8125 9.5625 3.375 10.125C3.9375 10.6875 4.64583 10.9792 5.5 11C6.35417 10.9792 7.0625 10.6875 7.625 10.125C8.1875 9.5625 8.47917 8.85417 8.5 8V3C8.47917 2.14583 8.1875 1.4375 7.625 0.875C7.0625 0.3125 6.35417 0.0208333 5.5 0ZM1.5 6.75C1.45833 6.29167 1.20833 6.04167 0.75 6C0.291667 6.04167 0.0416667 6.29167 0 6.75V8C0.0208333 9.41667 0.479167 10.625 1.375 11.625C2.25 12.625 3.375 13.2292 4.75 13.4375V14.5H3.25C2.79167 14.5417 2.54167 14.7917 2.5 15.25C2.54167 15.7083 2.79167 15.9583 3.25 16H5.5H7.75C8.20833 15.9583 8.45833 15.7083 8.5 15.25C8.45833 14.7917 8.20833 14.5417 7.75 14.5H6.25V13.4375C7.625 13.2292 8.75 12.625 9.625 11.625C10.5208 10.625 10.9792 9.41667 11 8V6.75C10.9583 6.29167 10.7083 6.04167 10.25 6C9.79167 6.04167 9.54167 6.29167 9.5 6.75V8C9.47917 9.125 9.09375 10.0729 8.34375 10.8438C7.57292 11.5938 6.625 11.9792 5.5 12C4.375 11.9792 3.42708 11.5938 2.65625 10.8438C1.90625 10.0729 1.52083 9.125 1.5 8V6.75Z" fill="#CBD5E1"/>
+          </svg>
+        </button>
+
+        <div class="input-shell">
+          <input type="text" placeholder="Ask about weather, forecasts, UV index..." />
+          <div class="voice-wave" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <button class="send-btn" type="button" aria-label="Send">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M11.6719 0.141797C11.9219 0.313672 12.0312 0.555859 12 0.868359L10.5 10.6184C10.4531 10.8527 10.3281 11.0324 10.125 11.1574C9.90625 11.2668 9.6875 11.2746 9.46875 11.1809L6.65625 10.0324L5.0625 11.7668C4.8125 12.0012 4.53125 12.0637 4.21875 11.9543C3.92188 11.8137 3.76562 11.5793 3.75 11.2512V9.28242C3.75 9.18867 3.78125 9.11055 3.84375 9.04805L7.78125 4.75898C7.90625 4.58711 7.89844 4.41523 7.75781 4.24336C7.60156 4.10273 7.42969 4.09492 7.24219 4.21992L2.48438 8.46211L0.421875 7.43086C0.15625 7.29023 0.015625 7.07148 0 6.77461C0 6.47773 0.125 6.25117 0.375 6.09492L10.875 0.0949219C11.1562 -0.0457031 11.4219 -0.0300781 11.6719 0.141797Z" fill="#F8FAFC"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+</body>
+</html>

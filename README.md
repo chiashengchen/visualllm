@@ -8,7 +8,7 @@ speech → STT → LLM → TTS → lip-sync avatar → audio+video out
 ```
 
 **Goal:** time-to-first-output (you stop speaking → avatar starts responding)
-**< 8 seconds**.
+**< 3 seconds**.
 
 The whole system streams: as soon as the LLM emits its first sentence it flows
 to TTS → first audio chunk → the avatar starts talking. We never wait for a
@@ -31,7 +31,7 @@ multi-provider branching). Core knobs: `LANGUAGE` (en/zh/th), `TTFO_TARGET_SECON
 | STT   | Deepgram (nova-2; `en-US` / `zh-TW` / `th` by `LANGUAGE`) — cloud |
 | LLM   | OpenRouter (any model via `OPENROUTER_MODEL`) — cloud |
 | TTS   | **CosyVoice2-0.5B**, local streaming server, female zero-shot voice — **runs on vLLM in WSL** (first-chunk latency ~1.1s; the Windows PyTorch server is the fallback). ElevenLabs / Deepgram Aura are cloud fallbacks via `TTS_PROVIDER` |
-| Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait |
+| Avatar| **MuseTalk** — local mouth-region lip-sync server on the GPU (5060 Ti), female portrait, **TensorRT render** (`MUSETALK_TRT=1`, default) |
 | Transport | WebRTC → browser at `/client/` |
 
 ```
@@ -102,5 +102,5 @@ Chinese). Deepgram switches to `zh-TW` and CosyVoice speaks zh — no code chang
 ## Measuring the goal
 
 - `TtfoMeter` (in the pipeline) logs each turn's TTFO and a p95 summary.
-  **Pass = p95 < 8 s.**
+  **Pass = p95 < 3 s.**
 - Biggest tuning lever: the VAD `stop_secs` in `pipeline/stages/vad.py`.

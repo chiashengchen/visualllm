@@ -197,6 +197,14 @@
   <h2>Every event, and why it happens</h2>
   <div class="events" id="events"></div>
 
+  <h2>Where the time goes — to the user's ear</h2>
+  <div class="grid3" id="waterfall"></div>
+  <p class="sub" style="margin-top:10px">Each card is one stage's cost; the stages add up from
+  t0 (user stopped speaking) to the moment the browser plays the first sound.
+  <b>log</b> = pipeline clock · <b>probe</b> = headless client arrival ·
+  <b>browser</b>/<b>est.</b> = real speaker playout or a jitter-buffer estimate. A
+  <span style="color:var(--warn)">warn</span> card = that stage's anchor was missing this run.</p>
+
   <h2>How it felt on the wire (probe, receiver-side)</h2>
   <div class="grid3" id="metrics"></div>
   <p class="sub" style="margin-top:10px">These come from the headless WebRTC probe that received the
@@ -334,6 +342,7 @@ const _M = (typeof window !== "undefined" && window.MEASURE) ? window.MEASURE : 
 const EV       = (_M && _M.events)   || EV_DEFAULT;
 const HANDOFFS = (_M && _M.handoffs) || HANDOFFS_DEFAULT;
 const METRICS  = (_M && _M.metrics)  || METRICS_DEFAULT;
+const WATERFALL = (_M && _M.waterfall) || [];
 
 function applyMeta(){
   if(!_M || !_M.meta) return;
@@ -456,6 +465,27 @@ function buildMetrics(){
   });
 }
 
+function buildWaterfall(){
+  const el=document.getElementById('waterfall');
+  if(!el) return;
+  if(!WATERFALL.length){ el.innerHTML='<div class="card"><div class="n">Run '+
+    '<code>python -m scripts.measure</code> to populate.</div></div>'; return; }
+  WATERFALL.forEach(r=>{
+    const card=document.createElement('div'); card.className='card';
+    const tag = r.status==='total' ? ' tag-ok' : (r.status==='unknown' ? ' tag-warn' : '');
+    const dv  = r.delta!=null ? (r.status==='total' ? '' : '+')+r.delta.toFixed(2)+'s'
+              : (r.status==='total' ? '' : '?');
+    const val = r.status==='total' && r.cum!=null ? r.cum.toFixed(2)+'s' : dv;
+    const sub = r.status==='total' ? 'end-to-end, user hears'
+              : (r.cum!=null ? 'cum '+r.cum.toFixed(2)+'s' : 'anchor missing')
+                + (r.source ? ' · '+r.source : '');
+    card.innerHTML=`<div class="k">${r.stage}</div>`+
+      `<div class="v${tag}">${val}</div>`+
+      `<div class="n">${sub}</div>`;
+    el.appendChild(card);
+  });
+}
+
 function buildHandoffs(){
   const el=document.getElementById('handoffs');
   const chip=s=>`<span class="chip" style="color:${STAGES[s].c}"><span class="dot" style="background:${STAGES[s].c}"></span>${STAGES[s].name.replace(/^[①②③④⑤⑥]\s/,'')}</span>`;
@@ -493,6 +523,7 @@ function setHL(id,on){
 }
 
 applyMeta(); buildLegend(); buildChart(); buildHandoffs(); buildEvents(); buildMetrics();
+buildWaterfall();
 </script>
 </body>
 </html>

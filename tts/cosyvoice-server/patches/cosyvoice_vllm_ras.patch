@@ -1,0 +1,98 @@
+diff --git a/cosyvoice/cli/model.py b/cosyvoice/cli/model.py
+index 92a15d9..8626f40 100644
+--- a/cosyvoice/cli/model.py
++++ b/cosyvoice/cli/model.py
+@@ -260,6 +260,12 @@ class CosyVoice2Model(CosyVoiceModel):
+         self.token_max_hop_len = 4 * self.token_hop_len
+         self.stream_scale_factor = 2
+         assert self.stream_scale_factor >= 1, 'stream_scale_factor should be greater than 1, change it according to your actual rtf'
++        # First-chunk latency knob: the FIRST stream chunk normally waits for
++        # token_hop_len(25)+prompt_pad+pre_lookahead tokens (~1s of speech) before emitting any
++        # audio -- for short replies that's ~the whole utterance, so it barely streams. Setting
++        # COSYVOICE_FIRST_HOP < 25 emits the first audio after fewer tokens (lower TTFB), only the
++        # opening chunk; later chunks keep 25 so steady-state quality is unchanged. 0 = default(25).
++        self._first_hop = int(os.getenv("COSYVOICE_FIRST_HOP", "0") or "0")
+         # hift cache
+         self.mel_cache_len = 8
+         self.source_cache_len = int(self.mel_cache_len * 480)
+@@ -280,11 +286,47 @@ class CosyVoice2Model(CosyVoiceModel):
+ 
+     def load_vllm(self, model_dir):
+         export_cosyvoice2_vllm(self.llm, model_dir, self.device)
++        # Register CosyVoice2's custom speech-token LLM with vLLM. Upstream never does this on the
++        # load path (no __init__, no register call), so vLLM rejects the CosyVoice2ForCausalLM arch
++        # ("architecture not supported"). Import + register it before building the engine.
++        from vllm import ModelRegistry
++        from cosyvoice.vllm.cosyvoice2 import CosyVoice2ForCausalLM
++        ModelRegistry.register_model("CosyVoice2ForCausalLM", CosyVoice2ForCausalLM)
+         from vllm import EngineArgs, LLMEngine
+-        engine_args = EngineArgs(model=model_dir,
+-                                 skip_tokenizer_init=True,
+-                                 enable_prompt_embeds=True,
+-                                 gpu_memory_utilization=0.2)
++        # enforce_eager: skip vLLM's torch.compile/inductor + CUDA-graph capture, which need a
++        # C compiler (gcc) that isn't in this WSL env (and sudo needs a password). Eager keeps the
++        # big wins (PagedAttention, fast prefill/decode); only forgoes CUDA-graph capture. Override
++        # with COSYVOICE_VLLM_EAGER=0 once a compiler is installed for the extra graph speedup.
++        _eager = os.getenv("COSYVOICE_VLLM_EAGER", "1").lower() in ("1", "true", "yes", "on")
++        # Fraction of the WHOLE 16GB card vLLM may use. This is its ceiling; KV cache =
++        # (frac*16GB - ~4GB for model+CUDA-context). 0.2 (3.26GB) is BELOW vLLM's own ~4GB
++        # footprint on this card -> KV cache goes negative and load crashes ("No available
++        # memory for the cache blocks"). 0.3 (4.89GB) leaves ~0.9GB KV, enough for CosyVoice's
++        # short per-sentence generations, and fits the ~5.4GB free alongside the MuseTalk
++        # avatar server. Raise toward 0.35 if a heavy GPU app is closed (more free VRAM).
++        _gpu_util = float(os.getenv("COSYVOICE_VLLM_GPU_UTIL", "0.3"))
++        # VRAM trim: TTS sequences are short (one sentence of speech tokens), so the
++        # default max_model_len (the Qwen2 base, tens of thousands of tokens) reserves
++        # far more KV cache than CosyVoice ever uses. Cap it to shrink the KV reservation
++        # with no quality loss for short prompts. 0/empty => leave vLLM's default.
++        _max_len_env = os.getenv("COSYVOICE_VLLM_MAX_LEN", "").strip()
++        _max_len = int(_max_len_env) if _max_len_env else None
++        # Reinstate CosyVoice's repetition-aware sampling (RAS) inside vLLM's sampler. The
++        # native PyTorch decode uses ras_sampling to stop the speech-token LLM looping on the
++        # silence token; the vLLM path does its own sampling and lost it, so zh intermittently
++        # degenerated into seconds of silence. vLLM's own penalties can't be used (they need
++        # prompt token ids, absent in prompt_embeds mode -> CUDA assert), so RAS is added as a
++        # per-request logits processor over OUTPUT tokens. See cosyvoice/vllm/ras_logits_processor.
++        from cosyvoice.vllm.ras_logits_processor import RasLogitsProcessor
++        _engine_kwargs = dict(model=model_dir,
++                              skip_tokenizer_init=True,
++                              enable_prompt_embeds=True,
++                              enforce_eager=_eager,
++                              gpu_memory_utilization=_gpu_util,
++                              logits_processors=[RasLogitsProcessor])
++        if _max_len is not None:
++            _engine_kwargs["max_model_len"] = _max_len
++        engine_args = EngineArgs(**_engine_kwargs)
+         self.llm.vllm = LLMEngine.from_engine_args(engine_args)
+         self.llm.lock = threading.Lock()
+         del self.llm.llm.model.model.layers
+@@ -345,7 +387,11 @@ class CosyVoice2Model(CosyVoiceModel):
+             prompt_token_pad = int(np.ceil(flow_prompt_speech_token.shape[1] / self.token_hop_len) * self.token_hop_len - flow_prompt_speech_token.shape[1])
+             while True:
+                 time.sleep(0.1)
+-                this_token_hop_len = self.token_hop_len + prompt_token_pad if token_offset == 0 else self.token_hop_len
++                if token_offset == 0:
++                    _base = self._first_hop if self._first_hop > 0 else self.token_hop_len
++                    this_token_hop_len = _base + prompt_token_pad
++                else:
++                    this_token_hop_len = self.token_hop_len
+                 if len(self.tts_speech_token_dict[this_uuid]) - token_offset >= this_token_hop_len + self.flow.pre_lookahead_len:
+                     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + this_token_hop_len + self.flow.pre_lookahead_len]).unsqueeze(dim=0)
+                     this_tts_speech = self.token2wav(token=this_tts_speech_token,
+diff --git a/cosyvoice/llm/llm.py b/cosyvoice/llm/llm.py
+index e8e81d9..a331e6e 100644
+--- a/cosyvoice/llm/llm.py
++++ b/cosyvoice/llm/llm.py
+@@ -505,7 +505,11 @@ class Qwen2LM(TransformerLM):
+     def inference_wrapper(self, lm_input, sampling, min_len, max_len, uuid):
+         if hasattr(self, 'vllm'):
+             from vllm import SamplingParams, RequestOutput
++            # top_p=0.8 + top_k=25 match ras_sampling's nucleus; the windowed repeat guard
++            # (the other half of RAS, which breaks the silence loop) is reinstated as the
++            # RasLogitsProcessor registered on the engine (see cli/model.py::load_vllm).
+             sampling_params = SamplingParams(top_k=sampling,
++                                             top_p=0.8,
+                                              stop_token_ids=self.stop_token_ids,
+                                              min_tokens=min_len,
+                                              max_tokens=max_len)

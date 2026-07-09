@@ -10,15 +10,22 @@
 #   CC/CXX + PATH                    -> Triton JITs kernels at runtime; point it at the conda gcc
 #   COSYVOICE_VLLM_EAGER=1 (default) -> skip torch.compile/CUDA-graph capture (needs more toolchain)
 set -e
-# This script lives in the repo at tts/cosyvoice-server/ ; run it from anywhere.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Path to the `cosyvllm` conda env inside WSL. Override with COSYVLLM_ENV if yours differs.
-ENV=${COSYVLLM_ENV:-$HOME/miniconda3/envs/cosyvllm}
+ENV=/home/porsche/miniconda3/envs/cosyvllm
 export PATH=$ENV/bin:$PATH
 export CC=$ENV/bin/gcc
 export CXX=$ENV/bin/g++
 export COSYVOICE_VLLM=1
 export VLLM_ENABLE_V1_MULTIPROCESSING=0
 export VLLM_USE_FLASHINFER_SAMPLER=0
-cd "$SCRIPT_DIR"
+# VRAM trim (2026-06-30, measured): cap max sequence length + the card fraction vLLM may use.
+# CosyVoice generates ONE short sentence of speech tokens per request, so the default KV
+# reservation (max_model_len 32768) is wildly oversized. Capping max-len to 2048 lets the
+# util fraction drop far below the old ~0.25 "floor": at 0.16 -> vLLM ~3.7GB with 74x KV
+# headroom; at 0.12 -> ~3.4GB / 47x (verified: en + a 27s zh paragraph synth clean, no
+# truncation). 0.16 is the robust default; set COSYVOICE_VLLM_GPU_UTIL=0.12 to squeeze the
+# whole stack under 8GB. Lower util also reserves less of the shared card -> friendlier to
+# the MuseTalk load-order (less "No available memory for the cache blocks"). Override either.
+export COSYVOICE_VLLM_MAX_LEN=${COSYVOICE_VLLM_MAX_LEN:-2048}
+export COSYVOICE_VLLM_GPU_UTIL=${COSYVOICE_VLLM_GPU_UTIL:-0.16}
+cd /mnt/e/Claude/cosyvoice-local-tts
 exec $ENV/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8001

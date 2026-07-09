@@ -43,7 +43,7 @@ def _get_float(name: str, default: str) -> float:
 class Config:
     # --- language + targets ---
     language: str = _get("LANGUAGE", "en")  # "en" | "zh" | "th"
-    ttfo_target_s: float = _get_float("TTFO_TARGET_SECONDS", "8")
+    ttfo_target_s: float = _get_float("TTFO_TARGET_SECONDS", "3")
 
     # --- product mode ---
     # ECHO_GUARD=1 mutes the mic while the bot is speaking (half-duplex). DEFAULT IS NOW 0
@@ -56,13 +56,45 @@ class Config:
     # MUSETALK_SYNC_MODE=live, where the mute strategy still tracks bot speech correctly.
     echo_guard: bool = (_get("ECHO_GUARD", "0") or "0").lower() in ("1", "true", "yes", "on")
 
+    # ALLOW_INTERRUPTIONS=1 (default) = the user can barge in and cut the bot off mid-reply
+    # (pipecat broadcasts an interruption when the user starts speaking). =0 = the bot ALWAYS
+    # finishes its turn; user speech during playback never cancels it ("can't interrupt").
+    # This is the turn-start strategy's `enable_interruptions` flag -- NOT the mic mute
+    # (that's echo_guard, which is broken under steady sync, P11); this has no mute state
+    # machine so it's safe under the default steady mode. See main.py.
+    allow_interruptions: bool = (_get("ALLOW_INTERRUPTIONS", "1") or "1").lower() in ("1", "true", "yes", "on")
+
     # --- STT (Deepgram) ---
     deepgram_api_key: str | None = _get("DEEPGRAM_API_KEY")
+
+    # --- STT provider switch (deliberate fallback switch, like TTS_PROVIDER) ---
+    # deepgram = cloud streaming (default, interim partials);
+    # sherpa   = local OFFLINE STREAMING (sherpa-onnx zipformer bilingual zh-en, CPU/~0 VRAM,
+    #            drives turn-taking from its own ASR endpoint detector -- robust to a quiet mic);
+    # funasr   = local OFFLINE SEGMENTED (SenseVoice-Small server; needs the energy-VAD to fire).
+    stt_provider: str = (_get("STT_PROVIDER", "deepgram") or "deepgram").lower()
+    funasr_url: str = _get("FUNASR_URL", "http://localhost:8004") or "http://localhost:8004"
+    funasr_model: str = _get("FUNASR_MODEL", "iic/SenseVoiceSmall") or "iic/SenseVoiceSmall"
+    funasr_device: str = _get("FUNASR_DEVICE", "cpu") or "cpu"
+    # sherpa: local streaming model dir + whether to convert zh output to Traditional (zh-TW).
+    sherpa_model_dir: str = _get(
+        "SHERPA_MODEL_DIR",
+        "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+    ) or "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+    sherpa_traditional: bool = (_get("SHERPA_TRADITIONAL", "1") or "1").lower() in ("1", "true", "yes", "on")
+    # How long a pause (seconds) ends your turn and FIRES the query to the LLM. Lower = snappier
+    # (fires sooner after you stop), but too low can cut you off mid-sentence. Default 0.5.
+    sherpa_endpoint_silence: float = _get_float("SHERPA_ENDPOINT_SILENCE", "0.5")
 
     # --- LLM (OpenRouter: one key, any model via OPENROUTER_MODEL) ---
     openrouter_api_key: str | None = _get("OPENROUTER_API_KEY")
     openrouter_base_url: str = _get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_model: str = _get("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite")
+    # Pin OpenRouter to a specific backend provider (e.g. "Groq") so the LLM hop runs on a
+    # low-latency inference host instead of the default transpacific Gemini route: cuts TTFT
+    # ~1.1-1.6s (tail to 3.6s) -> ~0.7s tight, the dominant TTFO cost + all its variance.
+    # Comma-list allowed. Empty = unpinned (today's behavior). See OPENROUTER_MODEL.
+    openrouter_provider_only: str = _get("OPENROUTER_PROVIDER_ONLY", "") or ""
 
     # --- LLM provider switch (deliberate fallback switch, like TTS_PROVIDER) ---
     # weather_chain = a dedicated Chinese weather bot backed by the NCU LangServe
@@ -166,10 +198,14 @@ class Config:
                 "ห้ามใช้อิโมจิ บุลเล็ต หรือสัญลักษณ์จัดรูปแบบใดๆ เพราะข้อความจะถูกอ่านออกเสียง"
             )
         if self.is_mandarin:
+            # First-sentence-short is a zh TTFO lever: CosyVoice prefills the whole first
+            # sentence before emitting any audio, so a short opener cuts the TTS first-chunk
+            # TTFB. (The first-clause split -- the en lever -- barely fires for zh.)
             return (
                 "你是一個友善、簡潔的語音助理。"
                 "請用口語化、適合朗讀的方式回答，句子要短，"
                 "每次回覆都要簡短，最多 2-3 句；內容很多時先給簡短答案再問是否要繼續，不要長篇大論，"
+                "第一句話要特別短（十個字以內），先講重點，讓語音能馬上開始，"
                 "避免使用表情符號、條列符號或特殊格式。"
             )
         return (

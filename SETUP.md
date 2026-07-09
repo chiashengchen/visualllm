@@ -6,7 +6,7 @@ what `INSTALL.md` defers to other files — the **WSL2 + vLLM** TTS build, the *
 conda env + weights**, and the **conda SSL gotcha** — so nothing is "see elsewhere".
 
 ```
-speech → STT → LLM → TTS → lip-sync avatar → audio + video out      (goal: TTFO < 8 s)
+speech → STT → LLM → TTS → lip-sync avatar → audio + video out      (goal: TTFO < 3 s)
 ```
 
 > Source-of-truth docs: `STATUS.md` (live state), `WORKFLOW.md` §8 (full `.env`),
@@ -192,7 +192,7 @@ python -m uvicorn app:app --host 0.0.0.0 --port 8001
 Then in `.env`: `COSYVOICE_URL=http://localhost:8001`.
 
 > **Drawback:** first-audio TTFB ~3.4 s vs ~1.1 s (≈3× slower), so the avatar's lips
-> visibly lag at turn start and the <8 s goal has far less headroom. WSL2 is the *only*
+> visibly lag at turn start and the <3 s goal has far less headroom. WSL2 is the *only*
 > thing Path A needs that Path B doesn't.
 
 ---
@@ -290,15 +290,34 @@ Minimum to fill:
 LANGUAGE=en                              # en | zh | th
 DEEPGRAM_API_KEY=...
 OPENROUTER_API_KEY=...
-OPENROUTER_MODEL=google/gemini-2.5-flash-lite   # cloud (accurate default). Local Ollama: base_url->:11434/v1 + model. For a reasoning model (qwen3.5:4b) add OPENROUTER_REASONING_EFFORT=none (else ~33s thinking) + OPENROUTER_MAX_TOKENS to cap length. See WORKFLOW.md §8.
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite   # cloud (the baseline). Local Ollama: base_url->:11434/v1 + a NON-reasoning model (qwen2.5:3b). Do NOT use a thinking model (qwen3.5:4b): it returns empty `content` -> avatar silent, and OPENROUTER_REASONING_EFFORT is a dead knob the pipeline never reads. See WORKFLOW.md §8.
 
 STT_PROVIDER=deepgram                    # or sherpa (offline) / funasr
 TTS_PROVIDER=cosyvoice
 COSYVOICE_URL=http://172.24.44.238:8001  # Path A: the WSL IP (wsl hostname -I). Path B: http://localhost:8001
 MUSETALK_SYNC_MODE=steady                # steady = video-master, synced start (default) | live = voice-instant, lips trail
+MUSETALK_TRT=1                           # TensorRT render (default). Build engines first (below) or it falls back to PyTorch
 ```
 Full knob reference: `WORKFLOW.md` §8. **Reminder:** after `wsl --shutdown` the WSL IP can
 change — re-check `wsl hostname -I` and update `COSYVOICE_URL`.
+
+**TensorRT engines (`MUSETALK_TRT=1`, the baseline).** The avatar defaults to the TensorRT render path
+(~1.5× faster; holds A/V sync under shared-GPU contention where PyTorch drifts on long turns —
+`docs/PROBLEMS-AND-FIXES.md` P16). The engines are **not** shipped (GPU/driver-specific, ~1.75 GB,
+gitignored in `local_services/musetalk_server/trt_cache/`). If they are absent the server logs it and
+**falls back to the PyTorch path** (correct, just slower), so this is optional-but-recommended. Build them
+once in the `musetalk` env with the one-command CLI (~7 min; rebuild after a GPU/driver change):
+```powershell
+$py = "E:\miniconda3\envs\musetalk\python.exe"
+# 0) install the TRT libs (from NVIDIA's index)
+& $py -m pip install -r local_services/musetalk_server/requirements-trt.txt --extra-index-url https://pypi.nvidia.com
+# 1) build both engines (UNet + VAE): torch -> ONNX -> fp16 engine, into trt_cache/
+& $py -m local_services.musetalk_server.trt_build
+```
+The CLI (`build_all` in `trt_build.py`) forces the PyTorch path during capture and derives the audio
+seq-len + max batch from the loaded model. If you need to build the engines by hand (or one at a time),
+the underlying helpers are `trt_export.export_{unet,vae}_onnx` + `trt_build.build_engine` — the CLI is
+just those four steps in order.
 
 ---
 
@@ -328,7 +347,7 @@ appear**, then talk.
 ## 9. Verify it works
 
 - `python -m scripts.preflight` — every import resolves; stages flip `KEYS` → `PASS` once keys set.
-- Each turn logs a **`[TTFO]`** line (time-to-first-output). **Pass = p95 < 8 s** (printed on disconnect).
+- Each turn logs a **`[TTFO]`** line (time-to-first-output). **Pass = p95 < 3 s** (printed on disconnect).
 - Headless A/V timeline + metrics (no browser): `python -m scripts.measure --offline-capture`.
 
 ---
