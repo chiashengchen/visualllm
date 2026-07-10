@@ -1,114 +1,91 @@
 # GCP 部署進度紀錄
 
-_更新：2026-07-07。這份文件記錄 GCP VM 部署（**含 MuseTalk avatar**）的現狀。
+_更新：2026-07-10。這份文件記錄 GCP VM 部署（**含 MuseTalk avatar**）的現狀。
 本機 Windows 部署的狀態仍以 `STATUS.md` 為準。量測方法見 `docs/BENCHMARKING.md`。_
 
-## 現狀：✅ 可用（語音 + 頭像）
+## 現狀：✅ 全面可用（語音 + 頭像，音質已驗收）
 
-`https://34.153.201.22/client/` — STT → LLM → TTS → **MuseTalk talking-head** 端到端正常。
-瀏覽器需點過自簽憑證警告（進階 → 繼續前往）。
+`https://34.153.201.22/client/`（prebuilt UI）/ `https://34.153.201.22/nimbus/`（自訂 UI）
+瀏覽器需點過自簽憑證警告。使用者 2026-07-10 實測通過。
 
-**✅ zh 音質破案（2026-07-10）：根因 = CosyVoice 文字前端吃繁體中文會崩** —
-繁體長句 ~10 字後劣化成亂碼（簡體完美），pipeline 是 zh-TW 所以從第一天（T4）就爛。
-A/B 矩陣排除了 vLLM / RAS / fp16 / streaming flow / 相依版本 / 參考音檔全部嫌疑。
-修復 = server 端 OpenCC 繁→簡（CosyVoice `82356c4`，`COSYVOICE_T2S=0` 可關），
-CER 0.45 → **0.09**（testing_mcp `run_tts_eval`）。之前記錄的「vLLM 音質怪」其實就是這個 bug。
+**現行組態**：L4 + **vLLM**（RAS 取樣修復）+ **OpenCC 繁→簡**（T2S）+ 美佳參考音色。
+品質：整句 CER 0.06 / streaming 路徑 CER 0.0；TTS TTFB ~2.3s（比 PyTorch 快 44%）、
+RTF ~0.4；live TTFO median 3.39s。
 
-**✅ vLLM 重新上線（2026-07-10）**：T2S 修復後重驗 — 整句 CER 0.06、streaming 路徑
-CER 0.0、TTS TTFB 2.3s（PyTorch 4.1s，快 44%）、RTF ~0.4。現行組態 = vLLM + RAS
-（ab52574）+ T2S + 美佳參考音色（macOS say 生成，`assets/meijia_ref.wav`，
-override 檔設 VOICE_REF_WAV/VOICE_PROMPT_TEXT）。殘留觀察：冷啟動後首次合成
-偶發一次靜音抖動（重跑 4/4 過）；streaming 曾出現一次 +0.54s 接縫。
-
-**⏳ 舊記錄（已被上面取代）：vLLM 音質試聽。** 目前 `USE_VLLM=1`（透過 VM 上的
-`docker-compose.override.yml`）。T4 時代 vLLM 版音質異常（fp16 + V0），L4 上改跑 bf16
-待使用者試聽定案 — 不行就刪 override 檔 + `docker compose up -d cosyvoice` 退回 PyTorch 模式。
-已知線索：vLLM 版同句話產出的音訊比 PyTorch 版長（8.6s vs 5.9s），疑似取樣參數差異。
-
-## 版本（git SHA，2026-07-07）
+## 版本（git SHA，2026-07-10）
 
 | Repo | Commit | 說明 |
 |------|--------|------|
-| visualllm | `bef1da3` | docs 更新；功能面最後一筆是 `61b066d`（MUSETALK_FPS 10→12） |
-| CosyVoice | `b0d93c2` | 開機 warmup + vLLM stack 烤進 image（USE_VLLM 執行期切換） |
+| visualllm | `3ca253e` | testing_mcp streaming eval + docs |
+| CosyVoice | `82356c4` | **T2S 根因修復**；含 RAS（ab52574）、warmup、vLLM stack |
 
-**進度快照**：L4 東京上全套（語音+avatar）可用。vLLM 模式開著（override 檔），
-L4 空載 TTS 實測 RTF 0.37（20 字合成 3.1s），但**音質未過關** — vLLM 版音訊比
-PyTorch 版長 ~35%（20 字 8.0s vs 5.9s），聽感「不像中文」，根因鎖定為 vLLM 路徑
-缺 CosyVoice 原版的 RAS（repetition-aware sampling）→ 語音 token 重複 → 拖音。
-PyTorch 模式偶爾也有短句劣化（zero-shot 參考文字比合成文字長的已知警告）。
+## zh 音質破案史（2026-07-10 收案）
 
-**下一步（優先序）**：
-1. **取樣對齊** — 把 vLLM 路徑的 sampling 對齊原版 RAS（`cosyvoice/llm/llm.py` vllm 分支；
-   repetition penalty / top-k / 外層重抽），修好就能吃到 RTF 0.37 又不犧牲音質
-2. 短句劣化緩解 — 換短參考音檔（`VOICE_REF`/`VOICE_TEXT`）或 pipeline 端合併短句
-3. STT→LLM 提早啟動（interim/partial transcript 就開始生成）— 預估只省 0.2-0.5s，
-   因為 streaming STT 的 final 在 VAD 停止後幾乎立即出來；優先度低於 TTS 側
-4. L4 乾淨基準（音質定案後）
+**根因 = CosyVoice 文字前端吃繁體中文會崩**：繁體長句 ~10 字後劣化成亂碼
+（簡體完美），pipeline 是 zh-TW 所以從第一天（T4）就爛。A/B 矩陣排除了
+vLLM / RAS / fp16 / streaming flow / 相依版本（oldstack 重建對照）/ 參考音檔全部嫌疑，
+最後用「簡體 vs 繁體同句對照」鎖定。**修復 = server 端 OpenCC 繁→簡**
+（`COSYVOICE_T2S=0` 可關），唸出來的普通話一模一樣。CER 0.45 → **0.09**。
+之前「vLLM 音質怪」的觀察其實是這個 bug 的誤判 — vLLM 平反後重新上線。
+
+評測工具 = `testing_mcp` 的 `run_tts_eval`（整句）+ `run_tts_streaming_eval`
+（mock LLM token 節奏 + first-piece 切片，量接縫空隙）。注意 Deepgram 評審的
+雜訊底線 CER ~0.1、數字會正規化（三點→3）造成假錯誤。
 
 ## 部署架構
 
 - **VM**: `visualllm-gpu`，zone **`asia-northeast1-c`（東京）**，外部 IP `34.153.201.22`
-  - `g2-standard-4`（4 vCPU / 16GB RAM）+ **NVIDIA L4 24GB**（Ada）
-  - 磁碟 160GB（2026-07-07 從 100GB 擴容 — vLLM image 需要空間）
-  - 2026-07-07 從首爾 T4（`asia-northeast3-c`）用 machine image 整機遷移。
-    台灣 `asia-east1` 的 L4 三個 zone 都 STOCKOUT，東京是最近的有貨區。
-    舊快照 `visualllm-t4-snapshot`（62GB）還在，確認穩定後可刪（~$3/月）。
+  - `g2-standard-4`（4 vCPU / 16GB RAM）+ **NVIDIA L4 24GB**（Ada），磁碟 160GB
+  - 2026-07-07 從首爾 T4 用 machine image 遷移（台灣 L4 全 STOCKOUT；
+    GPU 配額 all-regions=1 所以只能刪機重開）。舊快照 `visualllm-t4-snapshot` 可刪（~$3/月）
 - **docker compose 四個服務**：
-  - `cosyvoice` — CosyVoice**2**-0.5B TTS，GPU，:8001。image 已含 vLLM stack
-    （vllm 0.9.2 / torch 2.7 / transformers 4.51.3 / numpy2-ABI 修復），
-    `USE_VLLM` 環境變數決定推理引擎。開機自動 warmup（燒掉 cuDNN autotune 的
-    首輪 ~10s TTFB）。CosyVoice 需要 prompt_embeds → vLLM 永遠退 V0 引擎（跟 GPU 無關）。
-  - `musetalk` — MuseTalk v1.5 avatar，GPU，:8002。權重（~5GB）首次啟動自動下載進
-    volume，頭像 `assets/avatar.jpg`（**不進 git**，`gcloud compute scp` 上去，掛載唯讀）。
-    `MUSETALK_FPS=12`（跟 pipeline 兩處必須一致）。
-  - `pipeline` — Pipecat，**`network_mode: host`**（WebRTC UDP 必須直綁 host IP），
-    `ENABLE_AVATAR=1`，:7860
-  - `nginx` — HTTPS 自簽憑證，443 → `host.docker.internal:7860`
-- **STUN**: `pipeline/main.py::_configure_stun_servers()` 注入 google STUN（GCP 1:1 NAT 必需）
-- **防火牆**（tag `visualllm`）: 只開 tcp 443 + udp 49152-65535（WebRTC media）。
-  benchmark TTS 要先 ssh tunnel（見 `docs/BENCHMARKING.md` §0）
+  - `cosyvoice` — CosyVoice**2**-0.5B，GPU，:8001。`USE_VLLM` 執行期切換引擎
+    （vLLM 因 prompt_embeds 永遠退 V0，跟 GPU 無關）；開機 warmup；T2S 內建。
+    **現行 override 檔**（VM 上，不進 git）：`USE_VLLM=1`、`COSYVOICE_VLLM_GPU_UTIL=0.3`、
+    美佳參考音色（`VOICE_REF_WAV`/`VOICE_PROMPT_TEXT`，wav 在 `assets/meijia_ref.wav`，
+    macOS `say -v Meijia` 生成）。刪 override + `compose up -d cosyvoice` = 回 PyTorch/預設音色
+  - `musetalk` — MuseTalk v1.5 avatar，GPU，:8002。權重自動下載進 volume；
+    頭像 `assets/avatar.jpg`（不進 git，scp 上 VM）。`MUSETALK_FPS=12`（兩處必須一致）
+  - `pipeline` — Pipecat，`network_mode: host`（WebRTC UDP 必需），`ENABLE_AVATAR=1`，:7860
+  - `nginx` — HTTPS 自簽，443 → `host.docker.internal:7860`
+- **STUN**: `_configure_stun_servers()` 注入 google STUN（GCP 1:1 NAT 必需）
+- **防火牆**（tag `visualllm`）: 只開 tcp 443 + udp 49152-65535；benchmark 走 ssh tunnel
 - 設定: `LANGUAGE=zh`、LLM=openrouter（gemini-2.5-flash-lite）、STT=Deepgram nova-2
 
-## 延遲實測
+## 延遲實測（最終，2026-07-10，vLLM+T2S）
 
-**L4 乾淨數據還沒量**（上次手動測試時 vLLM image build 正在搶 CPU，數字被灌水：
-TTFO median 6.76s）。vLLM 音質定案後要重測一輪，下面是歷史對照：
-
-| 指標 | T4 首爾（07-05，PyTorch，無 avatar） | T4（07-07，含 avatar） | 5060 Ti 本機（文件 `docs/measure_data.js`，en，vLLM） |
+| 指標 | T4 首爾（07-05） | **L4 東京（現在）** | 5060 Ti 本機（en） |
 |------|------|------|------|
-| TTFO | 2.4–3.8s | 6.3–7.6s | **3.69s** |
-| LLM TTFB | 0.47–0.69s | 0.66–1.33s | 0.68s |
-| TTS 首 chunk | 1.4–3.2s | 3.9–5.8s | 1.75s（zh ~2.3s） |
-| Avatar fps | — | 7.4–8.4（設 10） | 12.2（設 12，跑滿） |
+| TTFO | 6.3–7.6s（含 avatar） | **2.99–3.39s median**（一次 6.2s outlier） | 3.69s |
+| LLM TTFB | 0.66–1.33s | 0.4–0.5s | 0.68s |
+| TTS 首 chunk | 3.9–5.8s | **~2.3s** | 1.75s（en） |
+| TTS RTF | ~1.0 | **~0.4** | — |
+| Avatar fps | 7.4–8.4（設 10 跑不滿） | **12.2（設 12 跑滿）** | 12.2 |
+| 整句 CER | （壞的，當時沒量） | **0.06–0.09** | — |
 
-**TTS 引擎對比（20 字中文句，總合成時間）**：
-- L4 PyTorch（torch 2.7）：7.0s（RTF ~1.19）
-- L4 vLLM（bf16, V0）：5.6s 但音訊變長 8.6s（**RTF 0.65**）
-- 關鍵發現：CosyVoice 的自回歸生成是**延遲綁定**（GPU util 只有 ~22%），
-  所以 T4→L4 純算力提升對 PyTorch 模式幾乎沒幫助；vLLM 的調度優化才是快的來源。
+關鍵發現：CosyVoice 自回歸生成是**延遲綁定**（GPU util ~22%），換強 GPU 對 PyTorch
+模式沒幫助，vLLM 的調度優化才是快的來源。
 
 ## 已知問題 / 待辦
 
-- [ ] **vLLM 音質試聽**（進行中，見上）；音訊變長的疑點要查 vllm 路徑的 sampling 參數
-- [ ] **L4 乾淨基準測試**（vLLM 定案後跑一輪：TTFO / TTS bench / avatar fps@12 / 資源用量）
-- [ ] fps 12 長回覆的 end drift 觀察（T4 上 render 跟不上 12 時 drift 會放大；L4 待驗證）
-- [ ] **Disconnect 後立刻 Connect 會卡住** — 瀏覽器端問題（playground 沒送 offer），
-  非 server 端。Workaround：重新整理頁面（F5）再連，或等幾秒再按一次 Connect
-- [ ] 刪 `visualllm-t4-snapshot` machine image（確認 L4 穩定後）
-- [ ] 自簽憑證：每個新瀏覽器都要手動信任。可改 Let's Encrypt（需要網域）
+- [ ] 冷啟動後第一次合成偶發靜音抖動（重跑即過；可把 warmup 改成長句多跑一次）
+- [ ] streaming 曾出現一次 +0.54s 接縫（`run_tts_streaming_eval` 可持續監測）
+- [ ] Disconnect 後立刻 Connect 卡住 — 瀏覽器端（不送 offer）；F5 或再按一次
+- [ ] 刪 `visualllm-t4-snapshot` machine image
+- [ ] 自簽憑證 → Let's Encrypt（需要網域）
 - [ ] VM 部署是手動 `git pull + compose build`，沒有 CD
-- [ ] 候選升級：CosyVoice 3（`HF_MODEL_ID=FunAudioLLM/Fun-CosyVoice3-0.5B-2512`，
-  server 支援切換，但推理相容性 + vLLM 相容性未驗證）
+- [ ] 美佳參考音色要不要轉正（寫進 compose/image）或換自選音色
+- [ ] 候選升級：CosyVoice 3（`Fun-CosyVoice3-0.5B-2512`，相容性未驗證）
 
 ## 歷史（已解決）
 
-- WebRTC 連不上 → HTTPS 必需（nginx 自簽）+ STUN + host network（Docker NAT 擋 UDP）
+- **zh 音質**（見上方破案史）— T2S 修復，vLLM 平反
+- OpenRouter key 失效（401 User not found，2026-07-10）→ 換新 key
+- WebRTC 連不上 → HTTPS（nginx 自簽）+ STUN + host network（Docker NAT 擋 UDP）
 - CosyVoice `TypeError: Invalid file: tensor` → `inference_zero_shot` 要傳 wav **路徑**
-- T4 上 vLLM 相依地獄 → torch 2.7 / numpy 2 ABI（onnxruntime、pyarrow 升版 + pyworld 重編）、
-  transformers 釘 4.51.3、`ModelRegistry.register_model()` 手動註冊、
-  `COSYVOICE_VLLM_GPU_UTIL`（寫死 0.2 會 crash）
-- MuseTalk Docker 化 → 逐檔權重檢查（gdown≥5 語法變了）、`.dockerignore` 解封、
-  pipeline Dockerfile 補 COPY `musetalk_video.py`
-- Cloud Run CD 移除（從未成功部署過 — GitHub secrets 根本沒設）；GPU 配額 all-regions=1
-  是 T4→L4 只能刪機重開（而非並行遷移）的原因
+- vLLM 相依地獄 → torch 2.7 / numpy 2 ABI（onnxruntime、pyarrow 升版 + pyworld 重編）、
+  transformers 釘 4.51.3、`ModelRegistry.register_model()`、`COSYVOICE_VLLM_GPU_UTIL`
+- Dockerfile.tts 層序（依賴在前、`COPY . .` 最後）→ 改 code 秒級重建
+- MuseTalk Docker 化 → 權重逐檔檢查（gdown≥5 語法）、`.dockerignore` 解封、
+  pipeline 補 COPY `musetalk_video.py`
+- Cloud Run CD 移除（從未成功部署過）
