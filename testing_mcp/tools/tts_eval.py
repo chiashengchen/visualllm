@@ -95,7 +95,11 @@ async def _eval_one(
 
     # --- Round-trip: transcribe the raw PCM with Deepgram ---
     transcript = await _transcribe_pcm(audio_bytes, deepgram_key, dg_lang)
-    cer = _cer(text, transcript) if transcript else None
+    # Compare spoken characters only: Deepgram (no smart_format) returns no
+    # punctuation, so raw-string CER counts every ，。 as an error.
+    import re as _re
+    _strip = lambda s: _re.sub(r"[^\w]", "", s or "")
+    cer = _cer(_strip(text), _strip(transcript)) if transcript else None
 
     return {
         "text": text,

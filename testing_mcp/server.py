@@ -18,6 +18,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from testing_mcp.tools.tts_eval import run_tts_eval
+from testing_mcp.tools.tts_streaming_eval import run_tts_streaming_eval
 from testing_mcp.tools.stt_eval import run_stt_eval
 from testing_mcp.tools.e2e_latency import run_e2e_latency
 from testing_mcp.tools.gcp_jobs import trigger_retrain, get_job_status, deploy_model
@@ -26,7 +27,10 @@ mcp = FastMCP(
     "visualllm-testing",
     instructions=(
         "Tools for evaluating and improving the VisualLLM speech pipeline. "
-        "Use run_tts_eval first to check TTS quality (TTFB + round-trip CER), "
+        "Use run_tts_eval first to check TTS quality (TTFB + round-trip CER on whole "
+        "sentences), run_tts_streaming_eval to reproduce the live pipeline's streaming "
+        "feed (mock LLM token pacing + first-clause piece splitting — measures first-piece "
+        "TTFB and audible seam gaps between pieces that whole-sentence eval can't see), "
         "then run_stt_eval for STT accuracy, and run_e2e_latency for end-to-end timing. "
         "If quality is below threshold, use trigger_retrain to start a GCP training job, "
         "then get_job_status to poll until completion."
@@ -34,6 +38,7 @@ mcp = FastMCP(
 )
 
 mcp.tool()(run_tts_eval)
+mcp.tool()(run_tts_streaming_eval)
 mcp.tool()(run_stt_eval)
 mcp.tool()(run_e2e_latency)
 mcp.tool()(trigger_retrain)
