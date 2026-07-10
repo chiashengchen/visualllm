@@ -8,7 +8,14 @@ _更新：2026-07-07。這份文件記錄 GCP VM 部署（**含 MuseTalk avatar*
 `https://34.153.201.22/client/` — STT → LLM → TTS → **MuseTalk talking-head** 端到端正常。
 瀏覽器需點過自簽憑證警告（進階 → 繼續前往）。
 
-**⏳ 進行中：vLLM 音質試聽。** 目前 `USE_VLLM=1`（透過 VM 上的
+**✅ zh 音質破案（2026-07-10）：根因 = CosyVoice 文字前端吃繁體中文會崩** —
+繁體長句 ~10 字後劣化成亂碼（簡體完美），pipeline 是 zh-TW 所以從第一天（T4）就爛。
+A/B 矩陣排除了 vLLM / RAS / fp16 / streaming flow / 相依版本 / 參考音檔全部嫌疑。
+修復 = server 端 OpenCC 繁→簡（CosyVoice `82356c4`，`COSYVOICE_T2S=0` 可關），
+CER 0.45 → **0.09**（詳見 testing_mcp 的 run_tts_eval）。之前記錄的「vLLM 音質怪」
+其實是這個 bug — **vLLM 模式值得重新開啟驗證**（RAS 修復 ab52574 也還在）。
+
+**⏳ 舊記錄（已被上面取代）：vLLM 音質試聽。** 目前 `USE_VLLM=1`（透過 VM 上的
 `docker-compose.override.yml`）。T4 時代 vLLM 版音質異常（fp16 + V0），L4 上改跑 bf16
 待使用者試聽定案 — 不行就刪 override 檔 + `docker compose up -d cosyvoice` 退回 PyTorch 模式。
 已知線索：vLLM 版同句話產出的音訊比 PyTorch 版長（8.6s vs 5.9s），疑似取樣參數差異。
