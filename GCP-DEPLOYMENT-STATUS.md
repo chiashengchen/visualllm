@@ -12,8 +12,13 @@ _更新：2026-07-07。這份文件記錄 GCP VM 部署（**含 MuseTalk avatar*
 繁體長句 ~10 字後劣化成亂碼（簡體完美），pipeline 是 zh-TW 所以從第一天（T4）就爛。
 A/B 矩陣排除了 vLLM / RAS / fp16 / streaming flow / 相依版本 / 參考音檔全部嫌疑。
 修復 = server 端 OpenCC 繁→簡（CosyVoice `82356c4`，`COSYVOICE_T2S=0` 可關），
-CER 0.45 → **0.09**（詳見 testing_mcp 的 run_tts_eval）。之前記錄的「vLLM 音質怪」
-其實是這個 bug — **vLLM 模式值得重新開啟驗證**（RAS 修復 ab52574 也還在）。
+CER 0.45 → **0.09**（testing_mcp `run_tts_eval`）。之前記錄的「vLLM 音質怪」其實就是這個 bug。
+
+**✅ vLLM 重新上線（2026-07-10）**：T2S 修復後重驗 — 整句 CER 0.06、streaming 路徑
+CER 0.0、TTS TTFB 2.3s（PyTorch 4.1s，快 44%）、RTF ~0.4。現行組態 = vLLM + RAS
+（ab52574）+ T2S + 美佳參考音色（macOS say 生成，`assets/meijia_ref.wav`，
+override 檔設 VOICE_REF_WAV/VOICE_PROMPT_TEXT）。殘留觀察：冷啟動後首次合成
+偶發一次靜音抖動（重跑 4/4 過）；streaming 曾出現一次 +0.54s 接縫。
 
 **⏳ 舊記錄（已被上面取代）：vLLM 音質試聽。** 目前 `USE_VLLM=1`（透過 VM 上的
 `docker-compose.override.yml`）。T4 時代 vLLM 版音質異常（fp16 + V0），L4 上改跑 bf16
